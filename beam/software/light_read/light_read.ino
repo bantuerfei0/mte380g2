@@ -5,10 +5,10 @@
  */
 
 // for mux
-const uint8_t MUX_PINS[3] = { 0, 0, 0 };
+const uint8_t MUX_PINS[3] = { 2, 3, 4 };
 
 // mux output
-const uint8_t MUX_OUTPUT_PIN = 0;
+const uint8_t MUX_OUTPUT_PIN = A0;
 uint8_t counter = 0;  // keep track of which led we're sending
 
 uint8_t light_value = 0;
