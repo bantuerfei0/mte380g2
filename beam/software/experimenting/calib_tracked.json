@@ -1,0 +1,24 @@
+{
+  "ball_low": [
+    4,
+    104,
+    158
+  ],
+  "ball_high": [
+    19,
+    255,
+    255
+  ],
+  "marker_low": [
+    21,
+    101,
+    104
+  ],
+  "marker_high": [
+    29,
+    255,
+    255
+  ],
+  "ball_min_area": 80,
+  "marker_min_area": 60
+}
