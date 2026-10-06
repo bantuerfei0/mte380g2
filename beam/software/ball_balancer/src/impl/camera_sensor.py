@@ -44,13 +44,14 @@ if __name__ == "__main__":
     camera_settings = [
         cv2.CAP_PROP_FRAME_WIDTH, 640,
         cv2.CAP_PROP_FRAME_HEIGHT, 480,
-        cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPEG"),
+        cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"),
         cv2.CAP_PROP_AUTO_WB, 0,
         cv2.CAP_PROP_AUTO_EXPOSURE,1,
         cv2.CAP_PROP_GAIN, 0,
         cv2.CAP_PROP_EXPOSURE, 300
     ]
     camera_sensor = CameraSensor(camera_settings)
+    camera_sensor.start()
     while True:
         frame = camera_sensor.frame
         if frame is not None:
