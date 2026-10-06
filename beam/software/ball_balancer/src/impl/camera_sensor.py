@@ -95,8 +95,8 @@ class CameraSensor(PositionSensor):
         ui.add_button("Beam", self._start_beam)
         ui.add_button("Sample", lambda: ui.capture_clicks(self._sample, "Click the ball"))
         ui.add_button("Clear", self._clear)
-        ui.add_slider("H tol", 0, 90, 1, self.tol[0], lambda v: self._set_tol(0, v))
-        ui.add_slider("SV tol", 0, 127, 1, self.tol[1], lambda v: self._set_tol(1, v))
+        ui.add_slider("Hue tolerance", 0, 90, 1, self.tol[0], lambda v: self._set_tol(0, v))
+        ui.add_slider("Sat/Val tolerance", 0, 127, 1, self.tol[1], lambda v: self._set_tol(1, v))
         self._start_beam()
 
     def _start_beam(self) -> None:

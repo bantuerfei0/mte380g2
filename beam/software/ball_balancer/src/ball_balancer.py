@@ -45,10 +45,10 @@ class BallBalancer:
     def _add_controls(self) -> None:
         self.sensor.add_controls(self.ui)
         for name, mx in zip(("kp", "ki", "kd"), self.cfg["pid"]["slider_max"]):
-            self.ui.add_slider(name.capitalize(), 0, mx, mx / 500, getattr(self.pid, name),
+            self.ui.add_slider(name.capitalize() + " (PID)", 0, mx, mx / 500, getattr(self.pid, name),
                                lambda v, n=name: setattr(self.pid, n, v))
         for i, s in enumerate(self.servos):
-            self.ui.add_slider(f"Level {i}", s.duty_min, s.duty_max, 0.01, s.level,
+            self.ui.add_slider(f"Servo {i} level %", s.duty_min, s.duty_max, 0.01, s.level,
                                lambda v, s=s: setattr(s, "level", v))
 
     def run(self) -> None:

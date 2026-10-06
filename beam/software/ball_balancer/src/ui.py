@@ -20,6 +20,7 @@ class UI:
         cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE)
         cv2.setMouseCallback(name, self._mouse)
         self.buttons = []
+        self.sliders: dict[str, float] = {}
         self._x = self.PAD
         self._click = None
         self.prompt = ""
@@ -31,8 +32,14 @@ class UI:
         self._x = rect[2] + self.PAD
 
     def add_slider(self, name: str, lo: float, hi: float, step: float, value: float, cb) -> None:
-        cv2.createTrackbar(name, self.name, round((value - lo) / step), round((hi - lo) / step),
-                           lambda v: cb(lo + v * step))
+        """Trackbars only show raw integer ticks, so the scaled value is drawn on the image."""
+        self.sliders[name] = value
+
+        def on_change(v: int) -> None:
+            self.sliders[name] = lo + v * step
+            cb(self.sliders[name])
+
+        cv2.createTrackbar(name, self.name, round((value - lo) / step), round((hi - lo) / step), on_change)
 
     def capture_clicks(self, handler, prompt: str) -> None:
         self._click, self.prompt = handler, prompt
@@ -55,6 +62,13 @@ class UI:
             cv2.rectangle(img, (x0, y0), (x1, y1), (60, 60, 60), -1)
             cv2.rectangle(img, (x0, y0), (x1, y1), (200, 200, 200), 1)
             cv2.putText(img, label, (x0 + self.PAD, y1 - 7), FONT, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        w = img.shape[1]
+        for i, (name, v) in enumerate(self.sliders.items()):
+            label = f"{name}: {v:.3g}"
+            (tw, _), _ = cv2.getTextSize(label, FONT, 0.5, 1)
+            org = (w - tw - self.PAD, self.PAD + self.H + 20 + 20 * i)
+            cv2.putText(img, label, org, FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, label, org, FONT, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         text = self.prompt or status
         if text:
             cv2.putText(img, text, (self.PAD, img.shape[0] - 10), FONT, 0.6, (0, 255, 255), 2, cv2.LINE_AA)

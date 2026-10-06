@@ -74,7 +74,7 @@ class LightBarSensor(PositionSensor):
 
     def add_controls(self, ui) -> None:
         ui.add_button("Calibrate", self._calibrate)
-        ui.add_slider("Threshold", 0, 128, 1, self.threshold, lambda v: setattr(self, "threshold", v))
+        ui.add_slider("Light threshold", 0, 128, 1, self.threshold, lambda v: setattr(self, "threshold", v))
 
     def _calibrate(self) -> None:
         self._cal_acc = []
