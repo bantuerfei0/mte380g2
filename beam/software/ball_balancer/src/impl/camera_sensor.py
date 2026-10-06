@@ -1,4 +1,4 @@
-from abs.position_sensor import PositionSensor
+from src.abs.position_sensor import PositionSensor
 import cv2
 import numpy as np
 import threading
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     camera_sensor = CameraSensor(camera_settings)
     while True:
         frame = camera_sensor.frame
-        if frame != None:
+        if frame is not None:
             cv2.imshow("Webcam", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
