@@ -1,7 +1,10 @@
 import threading
+import time
 from abc import ABC, abstractmethod
 
 import numpy as np
+
+from src.perf import PERF
 
 
 class PositionSensor(ABC):
@@ -9,7 +12,8 @@ class PositionSensor(ABC):
     Tracks a ball. Positions are normalised to -1..1 per axis; None means no ball found.
 
     To add a sensor: subclass this, implement task() and render(), and register it in
-    src/impl/__init__.py. task() runs on its own thread and calls _publish() per measurement.
+    src/impl/__init__.py. task() runs on its own thread and calls _publish() per measurement,
+    with t = the time the raw data was acquired (used for timing and profiling).
     Everything else has a working default.
     """
 
@@ -33,6 +37,8 @@ class PositionSensor(ABC):
         self.thread.join(timeout=1)
 
     def _publish(self, pos: np.ndarray | None, t: float) -> None:
+        PERF.record("process", (time.perf_counter() - t) * 1000)
+        PERF.tick("sensor")
         with self._cond:
             self._pos, self._t = pos, t
             self._seq += 1
@@ -50,8 +56,11 @@ class PositionSensor(ABC):
     def task(self) -> None: ...
 
     @abstractmethod
-    def render(self, view: str, target: np.ndarray) -> np.ndarray:
+    def render(self, view: str) -> np.ndarray:
         """Return a BGR image of the given view."""
+
+    def overlay(self, img: np.ndarray, target: np.ndarray) -> None:
+        """Draw tracking markers (beam, ball, target) onto a rendered image. Toggled by the user."""
 
     def add_controls(self, ui) -> None:
         """Register buttons/sliders. They are removed automatically when the sensor is switched out."""

@@ -48,6 +48,7 @@ class CameraSensor(PositionSensor):
         self.ui = None
         self._pending: list[tuple[int, int]] = []
         self._view = (None, None, None, 0.0)  # (frame, mask, ball px, blob area), swapped as one tuple
+        self._shown = self._view
 
     def _detect(self, frame: np.ndarray):
         center, beam = self.center, self.beam
@@ -123,8 +124,8 @@ class CameraSensor(PositionSensor):
         self.samples = []
         self.center = None
 
-    def render(self, view: str, target: np.ndarray) -> np.ndarray:
-        frame, mask, ball, _ = self._view
+    def render(self, view: str) -> np.ndarray:
+        frame, mask, _, _ = self._shown = self._view  # overlay() draws from the same snapshot
         if frame is None:
             return np.zeros((self.size[1], self.size[0], 3), np.uint8)
         if view == "Mask":
@@ -133,13 +134,16 @@ class CameraSensor(PositionSensor):
             img = frame.copy()
         for p in self._pending:
             cv2.circle(img, p, 4, (255, 255, 0), -1)
+        return img
+
+    def overlay(self, img: np.ndarray, target: np.ndarray) -> None:
+        ball = self._shown[2]
         if self.beam is not None:
             a, b = self.beam
             cv2.line(img, _pt(a), _pt(b), (255, 255, 0), 1)
             cv2.drawMarker(img, _pt(a + (target[0] + 1) / 2 * (b - a)), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
         if ball is not None:
             cv2.circle(img, _pt(ball), 8, (0, 255, 0), 2)
-        return img
 
     def stats(self) -> list[str]:
         center = "none" if self.center is None else " ".join(f"{c:.0f}" for c in self.center)

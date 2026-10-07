@@ -32,6 +32,7 @@ class LightBarSensor(PositionSensor):
         self.baseline = np.array(cal["baseline"], float) if "baseline" in cal else None
         self.values = np.zeros(self.n)
         self._view = (self.values.copy(), np.zeros(self.n), None)  # (readings, deviation, pos)
+        self._shown = self._view
         self._cal_acc: list[np.ndarray] = []
         self._cal_end = 0.0
 
@@ -80,9 +81,15 @@ class LightBarSensor(PositionSensor):
         self._cal_acc = []
         self._cal_end = time.perf_counter() + self.cal_time
 
-    def render(self, view: str, target: np.ndarray) -> np.ndarray:
-        v, dev, pos = self._view
-        h, w = 480, 640
+    H, W = 480, 640
+
+    def _px(self, p: float) -> int:
+        bw = self.W // self.n
+        return int((p + 1) / 2 * (self.W - bw) + bw / 2)
+
+    def render(self, view: str) -> np.ndarray:
+        v, dev, _ = self._shown = self._view  # overlay() draws from the same snapshot
+        h, w = self.H, self.W
         img = np.zeros((h, w, 3), np.uint8)
         bw = w // self.n
         top, bot = 40, h - 60
@@ -95,13 +102,15 @@ class LightBarSensor(PositionSensor):
             if view == "Readings" and self.baseline is not None:
                 yb = y(self.baseline[i])
                 cv2.line(img, (x + 4, yb), (x + bw - 4, yb), (255, 255, 0), 2)
-        px = lambda p: int((p + 1) / 2 * (w - bw) + bw / 2)
-        cv2.drawMarker(img, (px(target[0]), h - 25), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-        if pos is not None:
-            cv2.circle(img, (px(pos[0]), h - 25), 8, (0, 255, 0), 2)
         if self._cal_end:
             text(img, "Calibrating - remove ball", (w // 2 - 120, 25), (0, 220, 255), 0.6)
         return img
+
+    def overlay(self, img: np.ndarray, target: np.ndarray) -> None:
+        pos = self._shown[2]
+        cv2.drawMarker(img, (self._px(target[0]), self.H - 25), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
+        if pos is not None:
+            cv2.circle(img, (self._px(pos[0]), self.H - 25), 8, (0, 255, 0), 2)
 
     def stats(self) -> list[str]:
         return [] if self.baseline is not None else ["Not calibrated"]

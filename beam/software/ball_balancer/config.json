@@ -18,7 +18,15 @@
     "cal_time": 1.0
   },
   "servos": [
-    {"chip": 0, "channel": 2, "hz": 50, "duty_min": 7.5, "duty_max": 12.0, "invert": false, "rate_hz": 50}
+    {
+      "chip": 0,
+      "channel": 2,
+      "hz": 50,
+      "duty_min": 7.5,
+      "duty_max": 12.0,
+      "invert": false,
+      "rate_hz": 50
+    }
   ],
   "pid": {
     "kp": 1.0,
@@ -26,9 +34,19 @@
     "kd": 0.3,
     "d_alpha": 0.3,
     "i_limit": 0.5,
-    "slider_max": [5, 5, 2]
+    "slider_max": [
+      5,
+      5,
+      2
+    ]
   },
   "goals": [
-    {"pos": [0.0], "hold": 0}
-  ]
+    {
+      "pos": [
+        0.0
+      ],
+      "hold": 0
+    }
+  ],
+  "plot_seconds": 10
 }

@@ -15,7 +15,7 @@ def text(img: np.ndarray, s: str, org: tuple[int, int], color=WHITE, scale: floa
 
 @dataclass
 class Button:
-    label: str
+    label: str | Callable[[], str]  # a callable label updates live, e.g. "Record" / "Stop rec"
     cb: Callable[[], None]
     group: str
     rect: tuple = (0, 0, 0, 0)
@@ -68,7 +68,7 @@ class UI:
         finally:
             self._group = prev
 
-    def add_button(self, label: str, cb) -> None:
+    def add_button(self, label, cb) -> None:
         self.widgets.append(Button(label, cb, self._group))
 
     def add_slider(self, label: str, obj, attr: str, lo: float, hi: float) -> None:
@@ -106,13 +106,14 @@ class UI:
         ox, pad, y = self._img_w, 8, 8
         x = pad
         for b in (w for w in self.widgets if isinstance(w, Button)):
-            (tw, _), _ = cv2.getTextSize(b.label, FONT, 0.45, 1)
+            label = b.label() if callable(b.label) else b.label
+            (tw, _), _ = cv2.getTextSize(label, FONT, 0.45, 1)
             bw = tw + 2 * pad
             if x + bw > self.W - pad:
                 x, y = pad, y + self.ROW + 4
             cv2.rectangle(p, (x, y), (x + bw, y + self.ROW), DARK, -1)
             cv2.rectangle(p, (x, y), (x + bw, y + self.ROW), GREY, 1)
-            text(p, b.label, (x + pad, y + 17))
+            text(p, label, (x + pad, y + 17))
             b.rect = (ox + x, y, ox + x + bw, y + self.ROW)
             x += bw + 4
         y += self.ROW + 12
