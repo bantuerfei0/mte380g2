@@ -1,139 +1,181 @@
 import time
+from typing import NamedTuple
 
 import cv2
 import numpy as np
 import serial
 
 from src.abs.position_sensor import PositionSensor
-from src.ui import text
+from src.ui import ACCENT, COLOR_BALL, COLOR_REFERENCE, COLOR_TARGET, draw_text
+
+ADC_MAX = 255           # sensors report 8-bit values
+MIN_NOISE_COUNTS = 0.5  # floor on calibrated noise: 8-bit readings can show zero spread
+
+
+class LightBarSnapshot(NamedTuple):
+    """Results of one sweep, replaced as a whole so the GUI never sees a half-updated set."""
+
+    readings: np.ndarray             # raw ADC counts per sensor
+    shadow_fraction: np.ndarray      # step 1 below, per sensor
+    detection_threshold: np.ndarray  # step 2 below, per sensor (same units as shadow_fraction)
+    position: np.ndarray | None
 
 
 class LightBarSensor(PositionSensor):
     """
-    Line of light sensors read from the Mega over serial.
+    A row of light sensors under the beam, read from the Arduino Mega over serial.
 
-    Frame format:
-        byte 1: 1 iii 000 v   (MSB=1, 3-bit index, top bit of value)
+    Serial frame (2 bytes per sensor reading):
+        byte 1: 1 iii 000 v   (MSB=1, 3-bit sensor index, top bit of value)
         byte 2: 0 vvvvvvv     (MSB=0, low 7 bits of value)
 
-    Calibrate (no ball) records each sensor's baseline b and noise sigma. After each full
-    sweep of readings x (index n-1), the position is found in three steps:
-      1. d = (x - b) / (255 - b)  shadow as a fraction of each sensor's headroom (0 = no ball)
-      2. a sensor sees the ball if d > k * sigma / (255 - b), i.e. k standard deviations above noise
-      3. centroid of d over the strongest sensor and its `window` neighbours on each side
+    Calibrate (no ball on the beam) records each sensor's baseline and noise (standard
+    deviation). After every full sweep of readings, the position is found in three steps:
+      1. shadow_fraction = (reading - baseline) / (255 - baseline)
+         how much of the sensor's remaining headroom the ball's shadow uses (0 = no ball)
+      2. a sensor detects the ball if its shadow_fraction exceeds detection_sigmas noise
+         standard deviations (expressed in the same headroom units)
+      3. position = centroid of shadow_fraction over the strongest sensor and its
+         `centroid_neighbours` neighbours on each side, giving positions between sensors
     """
 
-    views = ("Readings", "Deviation")
+    view_names = ("Readings", "Shadow")
+    IMAGE_HEIGHT, IMAGE_WIDTH = 480, 640
 
-    def __init__(self, cfg: dict, cal: dict) -> None:
-        super().__init__(cfg, cal)
-        self.ser = serial.Serial(cfg["port"], cfg["baud"], timeout=0.1)
-        self.n = cfg["num_sensors"]
-        self.k = cfg["k"]
-        self.window = cfg["window"]
-        self.cal_time = cfg["cal_time"]
-        self.xs = np.linspace(-1, 1, self.n)
-        self.baseline = np.array(cal["baseline"], float) if "sigma" in cal else None
-        self.sigma = np.array(cal["sigma"], float) if "sigma" in cal else None
-        self.values = np.zeros(self.n)
-        self._view = (self.values.copy(), np.zeros(self.n), np.zeros(self.n), None)  # (readings, d, d threshold, pos)
-        self._shown = self._view
-        self._cal_acc: list[np.ndarray] = []
-        self._cal_end = 0.0
+    def __init__(self, config: dict, calibration: dict) -> None:
+        super().__init__(config, calibration)
+        self.serial_port = serial.Serial(config["port"], config["baud"], timeout=0.1)
+        self.num_sensors = config["num_sensors"]
+        self.detection_sigmas = config["detection_sigmas"]
+        self.centroid_neighbours = config["centroid_neighbours"]
+        self.calibration_seconds = config["calibration_seconds"]
+        self.sensor_positions = np.linspace(-1, 1, self.num_sensors)  # normalised beam position of each sensor
 
-    def task(self) -> None:
-        first = None  # holds the first byte of a frame until its partner arrives
-        while not self.done.is_set():
-            for b in self.ser.read(self.ser.in_waiting or 1):
-                if b & 0x80:
-                    first = b
-                elif first is not None:
-                    idx = (first >> 4) & 0x07
-                    if idx < self.n:
-                        self.values[self.n - 1 - idx] = ((first & 0x01) << 7) | b  # sensor order reversed
-                        if idx == self.n - 1:
-                            self._sweep()
-                    first = None
-                # a second byte with no first byte (e.g. right after connecting) is dropped
+        has_calibration = "sigma" in calibration
+        self.baseline = np.array(calibration["baseline"], float) if has_calibration else None
+        self.noise_sigma = np.array(calibration["sigma"], float) if has_calibration else None
 
-    def _sweep(self) -> None:
-        t = time.perf_counter()
-        v = self.values.copy()
-        if self._cal_end:
-            self._cal_acc.append(v)
-            if t >= self._cal_end:
-                self.baseline = np.mean(self._cal_acc, axis=0)
-                self.sigma = np.maximum(np.std(self._cal_acc, axis=0), 0.5)  # floor: 8-bit readings can show zero noise
-                self._cal_end = 0.0
-        d, thr, pos = np.zeros(self.n), np.zeros(self.n), None
+        self._readings = np.zeros(self.num_sensors)  # filled in one sensor at a time by the serial thread
+        self._calibration_sweeps: list[np.ndarray] = []
+        self._calibration_ends_at = 0.0  # non-zero while calibrating
+        empty = np.zeros(self.num_sensors)
+        self._latest = LightBarSnapshot(empty, empty, empty, None)
+        self._displayed = self._latest  # the snapshot render_view() used, so the overlay matches it
+
+    # --- serial thread ---
+
+    def acquisition_loop(self) -> None:
+        first_byte = None  # held until the second byte of the frame arrives
+        while not self.stop_requested.is_set():
+            for byte in self.serial_port.read(self.serial_port.in_waiting or 1):
+                if byte & 0x80:  # first byte of a frame
+                    first_byte = byte
+                elif first_byte is not None:
+                    sensor_index = (first_byte >> 4) & 0x07
+                    if sensor_index < self.num_sensors:
+                        value = ((first_byte & 0x01) << 7) | byte
+                        # sensors are wired in the opposite order to the beam's -1..+1 direction
+                        self._readings[self.num_sensors - 1 - sensor_index] = value
+                        if sensor_index == self.num_sensors - 1:  # last sensor of the sweep
+                            self._process_sweep()
+                    first_byte = None
+                # a second byte without a first byte (e.g. right after connecting) is dropped
+
+    def _process_sweep(self) -> None:
+        acquired_at = time.perf_counter()
+        readings = self._readings.copy()
+        if self._calibration_ends_at:
+            self._accumulate_calibration(readings, acquired_at)
+
+        position = None
+        shadow_fraction = detection_threshold = np.zeros(self.num_sensors)
         if self.baseline is not None:
-            room = np.maximum(255 - self.baseline, 1)
-            d = (v - self.baseline) / room
-            thr = self.k * self.sigma / room
-            pos = self._locate(d, thr)
-        self._view = (v, d, thr, pos)
-        self._publish(pos, t)
+            headroom = np.maximum(ADC_MAX - self.baseline, 1)
+            shadow_fraction = (readings - self.baseline) / headroom
+            detection_threshold = self.detection_sigmas * self.noise_sigma / headroom
+            position = self._locate_ball(shadow_fraction, detection_threshold)
 
-    def _locate(self, d: np.ndarray, thr: np.ndarray) -> np.ndarray | None:
-        peak = int(np.argmax(d - thr))
-        if d[peak] <= thr[peak]:
-            return None
-        lo, hi = max(peak - self.window, 0), min(peak + self.window + 1, self.n)
-        w = np.clip(d[lo:hi], 0, None)
-        return np.array([w @ self.xs[lo:hi] / w.sum()])
+        self._latest = LightBarSnapshot(readings, shadow_fraction, detection_threshold, position)
+        self._publish_measurement(position, acquired_at)
+
+    def _locate_ball(self, shadow_fraction: np.ndarray, detection_threshold: np.ndarray) -> np.ndarray | None:
+        strongest = int(np.argmax(shadow_fraction - detection_threshold))
+        if shadow_fraction[strongest] <= detection_threshold[strongest]:
+            return None  # no sensor clearly sees the ball
+        first = max(strongest - self.centroid_neighbours, 0)
+        last = min(strongest + self.centroid_neighbours + 1, self.num_sensors)
+        weights = np.clip(shadow_fraction[first:last], 0, None)
+        return np.array([weights @ self.sensor_positions[first:last] / weights.sum()])
+
+    def _accumulate_calibration(self, readings: np.ndarray, now: float) -> None:
+        self._calibration_sweeps.append(readings)
+        if now >= self._calibration_ends_at:
+            self.baseline = np.mean(self._calibration_sweeps, axis=0)
+            self.noise_sigma = np.maximum(np.std(self._calibration_sweeps, axis=0), MIN_NOISE_COUNTS)
+            self._calibration_ends_at = 0.0
 
     def stop(self) -> None:
         super().stop()
-        self.ser.close()
+        self.serial_port.close()
 
-    # --- GUI ---
+    # --- controls ---
 
     def add_controls(self, ui) -> None:
-        ui.add_button("Calibrate", self._calibrate)
-        ui.add_slider("k (sigma)", self, "k", 0, 10)
+        ui.add_button("Calibrate", self._start_calibration)
+        ui.add_slider("Detect (sigmas)", self, "detection_sigmas", 0, 10)
 
-    def _calibrate(self) -> None:
-        self._cal_acc = []
-        self._cal_end = time.perf_counter() + self.cal_time
+    def _start_calibration(self) -> None:
+        self._calibration_sweeps = []
+        self._calibration_ends_at = time.perf_counter() + self.calibration_seconds
 
-    H, W = 480, 640
+    # --- display ---
 
-    def _px(self, p: float) -> int:
-        bw = self.W // self.n
-        return int((p + 1) / 2 * (self.W - bw) + bw / 2)
+    def _beam_position_to_x(self, position: float) -> int:
+        bar_width = self.IMAGE_WIDTH // self.num_sensors
+        return int((position + 1) / 2 * (self.IMAGE_WIDTH - bar_width) + bar_width / 2)
 
-    def render(self, view: str) -> np.ndarray:
-        v, d, thr, _ = self._shown = self._view  # overlay() draws from the same snapshot
-        h, w = self.H, self.W
-        img = np.zeros((h, w, 3), np.uint8)
-        bw = w // self.n
-        top, bot = 40, h - 60
-        if view == "Readings":  # raw counts, baseline ticks
-            bars, ticks, scale, labels = v, self.baseline, 255, [f"{x:.0f}" for x in v]
-        else:  # d, with the detection threshold as ticks; auto-scaled
-            bars, ticks, labels = d, thr, [f"{x:.2f}" for x in d]
-            scale = max(d.max(), thr.max(), 0.02)
-        y = lambda val: int(bot - min(max(val, 0) / scale, 1) * (bot - top))
-        for i in range(self.n):
-            x = i * bw
-            cv2.rectangle(img, (x + 4, y(bars[i])), (x + bw - 4, bot), (180, 180, 180), -1)
-            text(img, labels[i], (x + 8, bot + 18))
-            if ticks is not None:
-                cv2.line(img, (x + 4, y(ticks[i])), (x + bw - 4, y(ticks[i])), (255, 255, 0), 2)
-        if self._cal_end:
-            text(img, "Calibrating - remove ball", (w // 2 - 120, 25), (0, 220, 255), 0.6)
-        return img
+    def render_view(self, view_name: str) -> np.ndarray:
+        """One bar per sensor. Readings: raw counts with baseline ticks. Shadow: shadow_fraction with threshold ticks."""
+        self._displayed = snapshot = self._latest
+        width, height = self.IMAGE_WIDTH, self.IMAGE_HEIGHT
+        image = np.zeros((height, width, 3), np.uint8)
+        bar_width = width // self.num_sensors
+        bars_top, bars_bottom = 40, height - 60
 
-    def overlay(self, img: np.ndarray, target: np.ndarray) -> None:
-        pos = self._shown[3]
-        cv2.drawMarker(img, (self._px(target[0]), self.H - 25), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-        if pos is not None:
-            cv2.circle(img, (self._px(pos[0]), self.H - 25), 8, (0, 255, 0), 2)
+        if view_name == "Readings":
+            bar_values, tick_values, full_scale = snapshot.readings, self.baseline, ADC_MAX
+            labels = [f"{v:.0f}" for v in snapshot.readings]
+        else:
+            bar_values, tick_values = snapshot.shadow_fraction, snapshot.detection_threshold
+            full_scale = max(bar_values.max(), tick_values.max(), 0.02)  # auto-scale to the largest value
+            labels = [f"{v:.2f}" for v in snapshot.shadow_fraction]
 
-    def stats(self) -> list[str]:
-        return [] if self.baseline is not None else ["Not calibrated"]
+        def value_to_y(value: float) -> int:
+            fraction_of_scale = min(max(value, 0) / full_scale, 1)
+            return int(bars_bottom - fraction_of_scale * (bars_bottom - bars_top))
 
-    def state(self) -> dict:
+        for i in range(self.num_sensors):
+            left, right = i * bar_width + 4, (i + 1) * bar_width - 4
+            cv2.rectangle(image, (left, value_to_y(bar_values[i])), (right, bars_bottom), (180, 180, 180), -1)
+            draw_text(image, labels[i], (left + 4, bars_bottom + 18))
+            if tick_values is not None:
+                tick_y = value_to_y(tick_values[i])
+                cv2.line(image, (left, tick_y), (right, tick_y), COLOR_REFERENCE, 2)
+
+        if self._calibration_ends_at:
+            draw_text(image, "Calibrating - remove ball", (width // 2 - 120, 25), ACCENT, 0.6)
+        return image
+
+    def draw_tracking_overlay(self, image: np.ndarray, target: np.ndarray) -> None:
+        marker_y = self.IMAGE_HEIGHT - 25
+        cv2.drawMarker(image, (self._beam_position_to_x(target[0]), marker_y), COLOR_TARGET, cv2.MARKER_CROSS, 20, 2)
+        if self._displayed.position is not None:
+            cv2.circle(image, (self._beam_position_to_x(self._displayed.position[0]), marker_y), 8, COLOR_BALL, 2)
+
+    def status_lines(self) -> list[str]:
+        return [] if self.baseline is not None else ["Not calibrated - press Calibrate"]
+
+    def calibration_state(self) -> dict:
         if self.baseline is None:
             return {}
-        return {"baseline": self.baseline.tolist(), "sigma": self.sigma.tolist()}
+        return {"baseline": self.baseline.tolist(), "sigma": self.noise_sigma.tolist()}

@@ -1,67 +1,82 @@
+"""Control law and target generation. Every signal is an array with one entry per axis."""
+
 import numpy as np
 
 
 class PID:
     """
-    Vectorised PID (same gains on every axis). Derivative is taken on the measurement
-    (no kick when the target changes) and low-pass filtered by d_alpha.
+    PID controller with the same gains on every axis.
+
+    - The derivative is taken on the measured position rather than the error, so a
+      sudden target change doesn't cause a kick, and it is low-pass filtered.
+    - The integral is clamped to +/- integral_limit to prevent wind-up.
+    - The output is clamped to +/- output_limit (1 = full tilt).
     """
 
-    def __init__(self, dims: int, kp: float, ki: float, kd: float,
-                 d_alpha: float, i_limit: float, out_limit: float = 1.0) -> None:
-        self.dims = dims
+    def __init__(self, num_axes: int, kp: float, ki: float, kd: float,
+                 derivative_filter_alpha: float, integral_limit: float, output_limit: float = 1.0) -> None:
+        self.num_axes = num_axes
         self.kp, self.ki, self.kd = kp, ki, kd
-        self.d_alpha = d_alpha
-        self.i_limit = i_limit
-        self.out_limit = out_limit
+        self.derivative_filter_alpha = derivative_filter_alpha  # 1 = no filtering, smaller = smoother
+        self.integral_limit = integral_limit
+        self.output_limit = output_limit
         self.reset()
 
     def reset(self) -> None:
-        self.terms = (np.zeros(self.dims),) * 3  # last (P, I, D) contributions, for display
-        self._i = np.zeros(self.dims)
-        self._d = np.zeros(self.dims)
-        self._prev = None
-        self._t = None
+        zeros = np.zeros(self.num_axes)
+        self.last_terms = (zeros, zeros, zeros)  # (P, I, D) contributions of the last update, for display
+        self._integral = zeros.copy()
+        self._filtered_derivative = zeros.copy()
+        self._previous_position: np.ndarray | None = None
+        self._previous_time: float | None = None
 
-    def update(self, pos: np.ndarray, target: np.ndarray, t: float) -> np.ndarray:
-        e = target - pos
-        if self._t is not None and t > self._t:
-            dt = t - self._t
-            self._i = np.clip(self._i + e * dt, -self.i_limit, self.i_limit)
-            self._d += self.d_alpha * (-(pos - self._prev) / dt - self._d)
-        self._prev, self._t = pos, t
-        self.terms = (self.kp * e, self.ki * self._i, self.kd * self._d)
-        return np.clip(sum(self.terms), -self.out_limit, self.out_limit)
+    def compute_output(self, position: np.ndarray, target: np.ndarray, timestamp: float) -> np.ndarray:
+        error = target - position
+        if self._previous_time is not None and timestamp > self._previous_time:
+            dt = timestamp - self._previous_time
+            self._integral = np.clip(self._integral + error * dt, -self.integral_limit, self.integral_limit)
+            raw_derivative = -(position - self._previous_position) / dt
+            self._filtered_derivative += self.derivative_filter_alpha * (raw_derivative - self._filtered_derivative)
+        self._previous_position, self._previous_time = position, timestamp
+
+        self.last_terms = (self.kp * error, self.ki * self._integral, self.kd * self._filtered_derivative)
+        return np.clip(sum(self.last_terms), -self.output_limit, self.output_limit)
 
 
-class Goals:
+class GoalSequence:
     """
-    Loops through goals [{"pos": [...], "hold": s}, ...]. A goal only counts as reached once the
-    ball is within `tol` of it (distance over all axes) and has stayed there for `hold` seconds;
-    leaving the tolerance restarts the hold. A single goal is just a fixed setpoint.
+    Loops through a list of goals: [{"position": [...], "hold_seconds": s}, ...].
+
+    A goal is reached once the ball is within `tolerance` of it (distance over all axes)
+    and has stayed there for `hold_seconds`; leaving the tolerance restarts the hold.
+    A single goal is simply a fixed setpoint.
     """
 
-    def __init__(self, goals: list[dict], tol: float) -> None:
-        self.points = [(np.array(g["pos"], float), g["hold"]) for g in goals]
-        self.tol = tol
-        self.i = 0
-        self._since = None  # time the ball entered the tolerance of the current goal
+    def __init__(self, goals: list[dict], tolerance: float) -> None:
+        self.goals = [(np.array(goal["position"], float), goal["hold_seconds"]) for goal in goals]
+        self.tolerance = tolerance
+        self.index = 0
+        self._entered_tolerance_at: float | None = None
 
     @property
-    def current(self) -> np.ndarray:
-        return self.points[self.i][0]
+    def current_target(self) -> np.ndarray:
+        return self.goals[self.index][0]
 
-    def update(self, pos: np.ndarray | None, t: float) -> np.ndarray:
-        goal, hold = self.points[self.i]
-        if pos is None or np.linalg.norm(pos - goal) > self.tol:
-            self._since = None
-        elif self._since is None:
-            self._since = t
-        elif t - self._since >= hold and len(self.points) > 1:
-            self.i = (self.i + 1) % len(self.points)
-            self._since = None
-        return self.current
+    def update_target(self, position: np.ndarray | None, timestamp: float) -> np.ndarray:
+        """Advances to the next goal if the current one has been reached; returns the target to use."""
+        goal, hold_seconds = self.goals[self.index]
+        within_tolerance = position is not None and np.linalg.norm(position - goal) <= self.tolerance
 
-    def status(self, t: float) -> str:
-        held = "-" if self._since is None else f"{t - self._since:.1f}/{self.points[self.i][1]}s"
-        return f"Goal {self.i + 1}/{len(self.points)}  held {held}"
+        if not within_tolerance:
+            self._entered_tolerance_at = None
+        elif self._entered_tolerance_at is None:
+            self._entered_tolerance_at = timestamp
+        elif timestamp - self._entered_tolerance_at >= hold_seconds and len(self.goals) > 1:
+            self.index = (self.index + 1) % len(self.goals)
+            self._entered_tolerance_at = None
+        return self.current_target
+
+    def status_text(self, now: float) -> str:
+        hold_seconds = self.goals[self.index][1]
+        held = "-" if self._entered_tolerance_at is None else f"{now - self._entered_tolerance_at:.1f}/{hold_seconds}s"
+        return f"Goal {self.index + 1}/{len(self.goals)}  held {held}"

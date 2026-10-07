@@ -1,3 +1,5 @@
+"""Records the system's response for the live plot and for CSV files."""
+
 import csv
 import time
 from collections import deque
@@ -6,87 +8,105 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.ui import text
+from src.ui import COLOR_BALL, COLOR_COMMAND, COLOR_TARGET, draw_text
 
-# Recorded signals, each with one column per axis. All are in normalised units (-1..1).
-FIELDS = ("target", "pos", "out", "P", "I", "D")
-COLORS = {"target": (0, 0, 255), "pos": (0, 255, 0), "out": (0, 220, 255)}  # plotted signals
+# Recorded signals, each with one CSV column per axis (e.g. target0, position0, ...). All normalised to -1..1.
+# "command" is the controller output sent to the servo (0 = level, +/-1 = full tilt).
+RECORDED_SIGNALS = ("target", "position", "command", "P", "I", "D")
+PLOTTED_SIGNALS = {"target": COLOR_TARGET, "position": COLOR_BALL, "command": COLOR_COMMAND}
+PLOT_STRIP_HEIGHT = 160  # pixels per axis
 
 
-class Recorder:
+class ResponseRecorder:
     """
-    Keeps the last `seconds` of the response for the live plot, and writes every
-    update to a CSV in `folder` while recording. pos is NaN when the ball is lost.
+    Keeps the last `plot_window_seconds` of samples for the live plot and, while recording,
+    writes every sample to recordings/<timestamp>.csv. Position is NaN while the ball is lost.
     """
 
-    def __init__(self, dims: int, seconds: float, folder: Path) -> None:
-        self.dims = dims
-        self.seconds = seconds
-        self.folder = folder
-        self.history: deque[np.ndarray] = deque()
-        self.path: Path | None = None
+    def __init__(self, num_axes: int, plot_window_seconds: float, recordings_folder: Path) -> None:
+        self.num_axes = num_axes
+        self.plot_window_seconds = plot_window_seconds
+        self.recordings_folder = recordings_folder
+        self.recent_rows: deque[np.ndarray] = deque()  # [timestamp, then each signal's per-axis values]
+        self.file_path: Path | None = None
         self._file = None
-        self._writer = None
-        self._t0 = 0.0
+        self._csv_writer = None
+        self._recording_started_at = 0.0
 
-    def col(self, field: str, axis: int) -> int:
-        return 1 + FIELDS.index(field) * self.dims + axis
+    def column_index(self, signal: str, axis: int) -> int:
+        return 1 + RECORDED_SIGNALS.index(signal) * self.num_axes + axis
 
-    def add(self, t: float, target, pos, out, terms) -> None:
-        if pos is None:
-            pos = np.full(self.dims, np.nan)
-        row = np.concatenate(([t], target, pos, out, *terms))
-        self.history.append(row)
-        while t - self.history[0][0] > self.seconds:
-            self.history.popleft()
-        if self._writer:
-            self._writer.writerow([f"{row[0] - self._t0:.4f}", *(f"{v:.5f}" for v in row[1:])])
+    def add_sample(self, timestamp: float, target, position, command, pid_terms) -> None:
+        if position is None:
+            position = np.full(self.num_axes, np.nan)
+        row = np.concatenate(([timestamp], target, position, command, *pid_terms))
 
-    # --- CSV ---
+        self.recent_rows.append(row)
+        while timestamp - self.recent_rows[0][0] > self.plot_window_seconds:
+            self.recent_rows.popleft()
+
+        if self._csv_writer:
+            elapsed = row[0] - self._recording_started_at
+            self._csv_writer.writerow([f"{elapsed:.4f}", *(f"{value:.5f}" for value in row[1:])])
+
+    # --- CSV recording ---
 
     @property
-    def recording(self) -> bool:
-        return self._writer is not None
+    def is_recording(self) -> bool:
+        return self._csv_writer is not None
 
-    def toggle(self) -> None:
-        self.stop() if self.recording else self.start()
+    def toggle_recording(self) -> None:
+        if self.is_recording:
+            self.stop_recording()
+        else:
+            self.start_recording()
 
-    def start(self) -> None:
-        self.folder.mkdir(exist_ok=True)
-        self.path = self.folder / time.strftime("%Y%m%d-%H%M%S.csv")
-        self._file = self.path.open("w", newline="")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(["t", *(f"{f}{a}" for f in FIELDS for a in range(self.dims))])
-        self._t0 = time.perf_counter()
+    def start_recording(self) -> None:
+        self.recordings_folder.mkdir(exist_ok=True)
+        self.file_path = self.recordings_folder / time.strftime("%Y%m%d-%H%M%S.csv")
+        self._file = self.file_path.open("w", newline="")
+        self._csv_writer = csv.writer(self._file)
+        header = [f"{signal}{axis}" for signal in RECORDED_SIGNALS for axis in range(self.num_axes)]
+        self._csv_writer.writerow(["t", *header])
+        self._recording_started_at = time.perf_counter()
 
-    def stop(self) -> None:
+    def stop_recording(self) -> None:
         if self._file:
             self._file.close()
-        self._file = self._writer = None
+        self._file = self._csv_writer = None
 
     # --- live plot ---
 
-    def plot(self, width: int, strip_h: int = 160) -> np.ndarray:
-        """One strip per axis showing target, pos and out over the last `seconds`."""
-        img = np.zeros((strip_h * self.dims, width, 3), np.uint8)
-        if len(self.history) < 2:
-            return img
-        data = np.array(self.history)
-        x = ((data[:, 0] - data[-1, 0]) / self.seconds + 1) * (width - 1)
-        for a in range(self.dims):
-            top = a * strip_h
-            y = lambda v: top + (1 - np.clip(v, -1, 1)) / 2 * (strip_h - 1)
-            for v, c in ((0, (90, 90, 90)), (0.5, (45, 45, 45)), (-0.5, (45, 45, 45))):
-                cv2.line(img, (0, int(y(v))), (width, int(y(v))), c, 1)
-            for field, color in COLORS.items():
-                pts = np.stack((x, y(data[:, self.col(field, a)])), axis=1)
-                ok = np.isfinite(pts[:, 1])
-                for seg in np.split(pts, np.flatnonzero(~ok)):  # break the line where the ball was lost
-                    seg = seg[np.isfinite(seg[:, 1])]
-                    if len(seg) > 1:
-                        cv2.polylines(img, [seg.astype(np.int32)], False, color, 1, cv2.LINE_AA)
-            text(img, f"axis {a}", (6, top + 16))
-            for i, (field, color) in enumerate(COLORS.items()):
-                text(img, field, (70 + 60 * i, top + 16), color)
-            cv2.line(img, (0, top), (width, top), (120, 120, 120), 1)
-        return img
+    def render_plot(self, width: int) -> np.ndarray:
+        """One strip per axis showing target, position and command over the plot window."""
+        image = np.zeros((PLOT_STRIP_HEIGHT * self.num_axes, width, 3), np.uint8)
+        if len(self.recent_rows) < 2:
+            return image
+
+        rows = np.array(self.recent_rows)
+        seconds_ago = rows[-1, 0] - rows[:, 0]
+        x_pixels = (1 - seconds_ago / self.plot_window_seconds) * (width - 1)
+
+        for axis in range(self.num_axes):
+            strip_top = axis * PLOT_STRIP_HEIGHT
+
+            def value_to_y(values):
+                return strip_top + (1 - np.clip(values, -1, 1)) / 2 * (PLOT_STRIP_HEIGHT - 1)
+
+            for gridline, color in ((0, (90, 90, 90)), (0.5, (45, 45, 45)), (-0.5, (45, 45, 45))):
+                y = int(value_to_y(gridline))
+                cv2.line(image, (0, y), (width, y), color, 1)
+
+            for signal, color in PLOTTED_SIGNALS.items():
+                points = np.stack((x_pixels, value_to_y(rows[:, self.column_index(signal, axis)])), axis=1)
+                gaps = np.flatnonzero(~np.isfinite(points[:, 1]))  # where the ball was lost
+                for segment in np.split(points, gaps):
+                    segment = segment[np.isfinite(segment[:, 1])]
+                    if len(segment) > 1:
+                        cv2.polylines(image, [segment.astype(np.int32)], False, color, 1, cv2.LINE_AA)
+
+            draw_text(image, f"axis {axis}", (6, strip_top + 16))
+            for i, (signal, color) in enumerate(PLOTTED_SIGNALS.items()):
+                draw_text(image, signal, (70 + 80 * i, strip_top + 16), color)
+            cv2.line(image, (0, strip_top), (width, strip_top), (120, 120, 120), 1)
+        return image
