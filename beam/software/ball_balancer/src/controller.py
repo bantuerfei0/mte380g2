@@ -35,19 +35,33 @@ class PID:
 
 
 class Goals:
-    """Loops through [(pos, hold_s), ...]. A single entry is just a fixed setpoint."""
+    """
+    Loops through goals [{"pos": [...], "hold": s}, ...]. A goal only counts as reached once the
+    ball is within `tol` of it (distance over all axes) and has stayed there for `hold` seconds;
+    leaving the tolerance restarts the hold. A single goal is just a fixed setpoint.
+    """
 
-    def __init__(self, goals: list[dict]) -> None:
+    def __init__(self, goals: list[dict], tol: float) -> None:
         self.points = [(np.array(g["pos"], float), g["hold"]) for g in goals]
+        self.tol = tol
         self.i = 0
-        self._t0 = None
+        self._since = None  # time the ball entered the tolerance of the current goal
 
-    def target(self, t: float) -> np.ndarray:
-        if self._t0 is None:
-            self._t0 = t
-        pos, hold = self.points[self.i]
-        if len(self.points) > 1 and t - self._t0 >= hold:
+    @property
+    def current(self) -> np.ndarray:
+        return self.points[self.i][0]
+
+    def update(self, pos: np.ndarray | None, t: float) -> np.ndarray:
+        goal, hold = self.points[self.i]
+        if pos is None or np.linalg.norm(pos - goal) > self.tol:
+            self._since = None
+        elif self._since is None:
+            self._since = t
+        elif t - self._since >= hold and len(self.points) > 1:
             self.i = (self.i + 1) % len(self.points)
-            self._t0 = t
-            pos = self.points[self.i][0]
-        return pos
+            self._since = None
+        return self.current
+
+    def status(self, t: float) -> str:
+        held = "-" if self._since is None else f"{t - self._since:.1f}/{self.points[self.i][1]}s"
+        return f"Goal {self.i + 1}/{len(self.points)}  held {held}"

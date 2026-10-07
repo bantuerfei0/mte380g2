@@ -33,7 +33,7 @@ class BallBalancer:
 
         p = {**self.cfg["pid"], **self.cal.get("pid", {})}
         self.pid = PID(1, p["kp"], p["ki"], p["kd"], p["d_alpha"], p["i_limit"])
-        self.goals = Goals(self.cfg["goals"])
+        self.goals = Goals(self.cfg["goals"], self.cfg["goal_tol"])
         levels = self.cal.get("servo_levels", [])
         self.servos = [Servo(c, levels[i] if i < len(levels) else None) for i, c in enumerate(self.cfg["servos"])]
 
@@ -98,7 +98,7 @@ class BallBalancer:
     def run(self) -> None:
         for s in self.servos:
             s.start()
-        self.target = self.goals.target(time.perf_counter())
+        self.target = self.goals.current
         keys = {ord(k): action for _, k, action in self.actions}
         try:
             while True:
@@ -125,7 +125,7 @@ class BallBalancer:
 
     def update(self, pos: np.ndarray | None, t: float) -> None:
         with PERF.time("control"):
-            self.target = self.goals.target(t)
+            self.target = self.goals.update(pos, t)
             if pos is None:
                 self.pid.reset()
                 out = np.zeros(self.sensor.dims)
@@ -152,6 +152,7 @@ class BallBalancer:
             f"{self.name} / {self.sensor.views[self.view]}   {rec}",
             f"Pos     {fmt(self.pos)}",
             f"Target  {fmt(self.target)}",
+            "        " + self.goals.status(time.perf_counter()),
             f"Error   {fmt(None if self.pos is None else self.target - self.pos)}",
             f"P {fmt(p)}  I {fmt(i)}",
             f"D {fmt(d)}  Out {fmt(self.out)}",

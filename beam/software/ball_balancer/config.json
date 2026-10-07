@@ -49,5 +49,6 @@
       "hold": 0
     }
   ],
-  "plot_seconds": 10
+  "plot_seconds": 10,
+  "goal_tol": 0.05
 }
