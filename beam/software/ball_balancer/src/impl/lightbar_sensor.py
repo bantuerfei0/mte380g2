@@ -41,7 +41,7 @@ class LightBarSensor(PositionSensor):
                 elif first is not None:
                     idx = (first >> 4) & 0x07
                     if idx < self.n:
-                        self.values[idx] = ((first & 0x01) << 7) | b
+                        self.values[self.n - 1 - idx] = ((first & 0x01) << 7) | b  # sensor order reversed
                         if idx == self.n - 1:
                             self._sweep()
                     first = None
