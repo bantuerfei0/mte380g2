@@ -16,8 +16,11 @@ class LightBarSensor(PositionSensor):
         byte 1: 1 iii 000 v   (MSB=1, 3-bit index, top bit of value)
         byte 2: 0 vvvvvvv     (MSB=0, low 7 bits of value)
 
-    A position is published after each full sweep (index n-1): the weighted centroid of
-    each sensor's deviation from its no-ball baseline.
+    Calibrate (no ball) records each sensor's baseline b and noise sigma. After each full
+    sweep of readings x (index n-1), the position is found in three steps:
+      1. d = (x - b) / (255 - b)  shadow as a fraction of each sensor's headroom (0 = no ball)
+      2. a sensor sees the ball if d > k * sigma / (255 - b), i.e. k standard deviations above noise
+      3. centroid of d over the strongest sensor and its `window` neighbours on each side
     """
 
     views = ("Readings", "Deviation")
@@ -26,12 +29,14 @@ class LightBarSensor(PositionSensor):
         super().__init__(cfg, cal)
         self.ser = serial.Serial(cfg["port"], cfg["baud"], timeout=0.1)
         self.n = cfg["num_sensors"]
-        self.threshold = cfg["threshold"]
+        self.k = cfg["k"]
+        self.window = cfg["window"]
         self.cal_time = cfg["cal_time"]
         self.xs = np.linspace(-1, 1, self.n)
-        self.baseline = np.array(cal["baseline"], float) if "baseline" in cal else None
+        self.baseline = np.array(cal["baseline"], float) if "sigma" in cal else None
+        self.sigma = np.array(cal["sigma"], float) if "sigma" in cal else None
         self.values = np.zeros(self.n)
-        self._view = (self.values.copy(), np.zeros(self.n), None)  # (readings, deviation, pos)
+        self._view = (self.values.copy(), np.zeros(self.n), np.zeros(self.n), None)  # (readings, d, d threshold, pos)
         self._shown = self._view
         self._cal_acc: list[np.ndarray] = []
         self._cal_end = 0.0
@@ -58,14 +63,24 @@ class LightBarSensor(PositionSensor):
             self._cal_acc.append(v)
             if t >= self._cal_end:
                 self.baseline = np.mean(self._cal_acc, axis=0)
+                self.sigma = np.maximum(np.std(self._cal_acc, axis=0), 0.5)  # floor: 8-bit readings can show zero noise
                 self._cal_end = 0.0
-        dev, pos = np.zeros(self.n), None
+        d, thr, pos = np.zeros(self.n), np.zeros(self.n), None
         if self.baseline is not None:
-            dev = np.clip(np.abs(self.baseline - v) - self.threshold, 0, None)
-            s = dev.sum()
-            pos = np.array([dev @ self.xs / s]) if s > 0 else None
-        self._view = (v, dev, pos)
+            room = np.maximum(255 - self.baseline, 1)
+            d = (v - self.baseline) / room
+            thr = self.k * self.sigma / room
+            pos = self._locate(d, thr)
+        self._view = (v, d, thr, pos)
         self._publish(pos, t)
+
+    def _locate(self, d: np.ndarray, thr: np.ndarray) -> np.ndarray | None:
+        peak = int(np.argmax(d - thr))
+        if d[peak] <= thr[peak]:
+            return None
+        lo, hi = max(peak - self.window, 0), min(peak + self.window + 1, self.n)
+        w = np.clip(d[lo:hi], 0, None)
+        return np.array([w @ self.xs[lo:hi] / w.sum()])
 
     def stop(self) -> None:
         super().stop()
@@ -75,7 +90,7 @@ class LightBarSensor(PositionSensor):
 
     def add_controls(self, ui) -> None:
         ui.add_button("Calibrate", self._calibrate)
-        ui.add_slider("Threshold", self, "threshold", 0, 128)
+        ui.add_slider("k (sigma)", self, "k", 0, 10)
 
     def _calibrate(self) -> None:
         self._cal_acc = []
@@ -88,26 +103,29 @@ class LightBarSensor(PositionSensor):
         return int((p + 1) / 2 * (self.W - bw) + bw / 2)
 
     def render(self, view: str) -> np.ndarray:
-        v, dev, _ = self._shown = self._view  # overlay() draws from the same snapshot
+        v, d, thr, _ = self._shown = self._view  # overlay() draws from the same snapshot
         h, w = self.H, self.W
         img = np.zeros((h, w, 3), np.uint8)
         bw = w // self.n
         top, bot = 40, h - 60
-        y = lambda val: int(bot - min(val, 255) / 255 * (bot - top))
-        bars = v if view == "Readings" else dev * 255 / max(dev.max(), 1)
-        for i, val in enumerate(bars):
+        if view == "Readings":  # raw counts, baseline ticks
+            bars, ticks, scale, labels = v, self.baseline, 255, [f"{x:.0f}" for x in v]
+        else:  # d, with the detection threshold as ticks; auto-scaled
+            bars, ticks, labels = d, thr, [f"{x:.2f}" for x in d]
+            scale = max(d.max(), thr.max(), 0.02)
+        y = lambda val: int(bot - min(max(val, 0) / scale, 1) * (bot - top))
+        for i in range(self.n):
             x = i * bw
-            cv2.rectangle(img, (x + 4, y(val)), (x + bw - 4, bot), (180, 180, 180), -1)
-            text(img, f"{v[i]:.0f}", (x + 8, bot + 18))
-            if view == "Readings" and self.baseline is not None:
-                yb = y(self.baseline[i])
-                cv2.line(img, (x + 4, yb), (x + bw - 4, yb), (255, 255, 0), 2)
+            cv2.rectangle(img, (x + 4, y(bars[i])), (x + bw - 4, bot), (180, 180, 180), -1)
+            text(img, labels[i], (x + 8, bot + 18))
+            if ticks is not None:
+                cv2.line(img, (x + 4, y(ticks[i])), (x + bw - 4, y(ticks[i])), (255, 255, 0), 2)
         if self._cal_end:
             text(img, "Calibrating - remove ball", (w // 2 - 120, 25), (0, 220, 255), 0.6)
         return img
 
     def overlay(self, img: np.ndarray, target: np.ndarray) -> None:
-        pos = self._shown[2]
+        pos = self._shown[3]
         cv2.drawMarker(img, (self._px(target[0]), self.H - 25), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
         if pos is not None:
             cv2.circle(img, (self._px(pos[0]), self.H - 25), 8, (0, 255, 0), 2)
@@ -116,4 +134,6 @@ class LightBarSensor(PositionSensor):
         return [] if self.baseline is not None else ["Not calibrated"]
 
     def state(self) -> dict:
-        return {"baseline": self.baseline.tolist()} if self.baseline is not None else {}
+        if self.baseline is None:
+            return {}
+        return {"baseline": self.baseline.tolist(), "sigma": self.sigma.tolist()}
