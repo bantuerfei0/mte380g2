@@ -29,7 +29,8 @@ class Slider:
     lo: float
     hi: float
     group: str
-    rect: tuple = (0, 0, 0, 0)
+    rect: tuple = (0, 0, 0, 0)        # the bar: click or drag to set
+    label_rect: tuple = (0, 0, 0, 0)  # the label: click to type an exact value
 
     def set_from_x(self, x: int) -> None:
         x0, _, x1, _ = self.rect
@@ -44,6 +45,8 @@ class UI:
 
     Widgets belong to a group so a component can remove its own controls (e.g. on sensor switch).
     Sliders bind directly to an attribute, so the panel always shows the live value.
+    Clicking a slider's label lets you type an exact value (Enter applies, Esc cancels);
+    typed values may go outside the slider's range.
     Clicks on the image go to the active capture handler (calibration); Enter cancels it.
     """
 
@@ -56,6 +59,8 @@ class UI:
         self.widgets: list[Button | Slider] = []
         self._group = ""
         self._drag: Slider | None = None
+        self._edit: Slider | None = None
+        self._buf = ""
         self._click = None
         self._img_w = 0
         self.prompt = ""
@@ -84,10 +89,14 @@ class UI:
         self._click, self.prompt = None, ""
 
     def _mouse(self, event, x, y, flags, _) -> None:
+        inside = lambda r: r[0] <= x < r[2] and r[1] <= y < r[3]
         if event == cv2.EVENT_LBUTTONDOWN:
+            self._edit = None
             for w in self.widgets:
-                x0, y0, x1, y1 = w.rect
-                if x0 <= x < x1 and y0 <= y < y1:
+                if isinstance(w, Slider) and inside(w.label_rect):
+                    self._edit, self._buf = w, ""
+                    return
+                if inside(w.rect):
                     if isinstance(w, Button):
                         w.cb()
                     else:
@@ -119,7 +128,11 @@ class UI:
         y += self.ROW + 12
         for s in (w for w in self.widgets if isinstance(w, Slider)):
             v = getattr(s.obj, s.attr)
-            text(p, f"{s.label}: {v:.3g}", (pad, y + 12))
+            if s is self._edit:
+                text(p, f"{s.label}: {self._buf}_", (pad, y + 12), ACCENT)
+            else:
+                text(p, f"{s.label}: {v:.4g}", (pad, y + 12))
+            s.label_rect = (ox, y, ox + self.W, y + 16)
             y0, y1 = y + 18, y + 28
             cv2.rectangle(p, (pad, y0), (self.W - pad, y1), DARK, -1)
             f = min(max((v - s.lo) / (s.hi - s.lo), 0.0), 1.0)
@@ -144,8 +157,27 @@ class UI:
         pad = lambda a, c: cv2.copyMakeBorder(a, 0, h - a.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=c)
         cv2.imshow(self.name, np.hstack((pad(img, (0, 0, 0)), pad(panel, PANEL))))
         key = cv2.waitKey(1)
-        if key in (10, 13) and self._click:
+        key = -1 if key == -1 else key & 0xFF
+        if self._edit:
+            key = self._type(key)
+        elif key in (10, 13) and self._click:
             self.end_capture()
         if cv2.getWindowProperty(self.name, cv2.WND_PROP_VISIBLE) < 1:
             return 27
         return key
+
+    def _type(self, key: int) -> int:
+        """Handles a key while a slider value is being typed. Returns -1 so it isn't treated as a shortcut."""
+        if key in (10, 13):
+            try:
+                setattr(self._edit.obj, self._edit.attr, float(self._buf))
+            except ValueError:
+                pass
+            self._edit = None
+        elif key == 27:
+            self._edit = None
+        elif key in (8, 127):
+            self._buf = self._buf[:-1]
+        elif key != -1 and chr(key) in "0123456789.-e":
+            self._buf += chr(key)
+        return -1
