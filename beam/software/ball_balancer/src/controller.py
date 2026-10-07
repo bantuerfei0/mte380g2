@@ -17,6 +17,7 @@ class PID:
         self.reset()
 
     def reset(self) -> None:
+        self.terms = (np.zeros(self.dims),) * 3  # last (P, I, D) contributions, for display
         self._i = np.zeros(self.dims)
         self._d = np.zeros(self.dims)
         self._prev = None
@@ -29,8 +30,8 @@ class PID:
             self._i = np.clip(self._i + e * dt, -self.i_limit, self.i_limit)
             self._d += self.d_alpha * (-(pos - self._prev) / dt - self._d)
         self._prev, self._t = pos, t
-        u = self.kp * e + self.ki * self._i + self.kd * self._d
-        return np.clip(u, -self.out_limit, self.out_limit)
+        self.terms = (self.kp * e, self.ki * self._i, self.kd * self._d)
+        return np.clip(sum(self.terms), -self.out_limit, self.out_limit)
 
 
 class Goals:

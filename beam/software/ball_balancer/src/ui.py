@@ -1,45 +1,81 @@
-import time
-from collections import deque
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Callable
 
 import cv2
 import numpy as np
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+WHITE, GREY, DARK, PANEL, ACCENT = (255, 255, 255), (150, 150, 150), (60, 60, 60), (30, 30, 30), (0, 220, 255)
+
+
+def text(img: np.ndarray, s: str, org: tuple[int, int], color=WHITE, scale: float = 0.45) -> None:
+    cv2.putText(img, s, org, FONT, scale, color, 1, cv2.LINE_AA)
+
+
+@dataclass
+class Button:
+    label: str
+    cb: Callable[[], None]
+    group: str
+    rect: tuple = (0, 0, 0, 0)
+
+
+@dataclass
+class Slider:
+    label: str
+    obj: object
+    attr: str
+    lo: float
+    hi: float
+    group: str
+    rect: tuple = (0, 0, 0, 0)
+
+    def set_from_x(self, x: int) -> None:
+        x0, _, x1, _ = self.rect
+        f = min(max((x - x0) / (x1 - x0), 0.0), 1.0)
+        setattr(self.obj, self.attr, self.lo + f * (self.hi - self.lo))
 
 
 class UI:
     """
-    Main window: buttons drawn on the image, native trackbars, and click capture for
-    calibration (a handler receives image clicks until end_capture(); Enter cancels).
+    One window: the sensor's image on the left, a control panel on the right.
+    Everything is drawn with cv2.putText, so no Qt widgets or fonts are involved.
+
+    Widgets belong to a group so a component can remove its own controls (e.g. on sensor switch).
+    Sliders bind directly to an attribute, so the panel always shows the live value.
+    Clicks on the image go to the active capture handler (calibration); Enter cancels it.
     """
 
-    PAD, H = 6, 24
+    W, ROW = 260, 26
 
     def __init__(self, name: str) -> None:
         self.name = name
-        cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
         cv2.setMouseCallback(name, self._mouse)
-        self.buttons = []
-        self.sliders: dict[str, float] = {}
-        self._x = self.PAD
+        self.widgets: list[Button | Slider] = []
+        self._group = ""
+        self._drag: Slider | None = None
         self._click = None
+        self._img_w = 0
         self.prompt = ""
 
+    @contextmanager
+    def group(self, name: str):
+        prev, self._group = self._group, name
+        try:
+            yield
+        finally:
+            self._group = prev
+
     def add_button(self, label: str, cb) -> None:
-        (w, _), _ = cv2.getTextSize(label, FONT, 0.5, 1)
-        rect = (self._x, self.PAD, self._x + w + 2 * self.PAD, self.PAD + self.H)
-        self.buttons.append((rect, label, cb))
-        self._x = rect[2] + self.PAD
+        self.widgets.append(Button(label, cb, self._group))
 
-    def add_slider(self, name: str, lo: float, hi: float, step: float, value: float, cb) -> None:
-        """Trackbars only show raw integer ticks, so the scaled value is drawn on the image."""
-        self.sliders[name] = value
+    def add_slider(self, label: str, obj, attr: str, lo: float, hi: float) -> None:
+        self.widgets.append(Slider(label, obj, attr, lo, hi, self._group))
 
-        def on_change(v: int) -> None:
-            self.sliders[name] = lo + v * step
-            cb(self.sliders[name])
-
-        cv2.createTrackbar(name, self.name, round((value - lo) / step), round((hi - lo) / step), on_change)
+    def remove(self, group: str) -> None:
+        self.widgets = [w for w in self.widgets if w.group != group]
 
     def capture_clicks(self, handler, prompt: str) -> None:
         self._click, self.prompt = handler, prompt
@@ -47,49 +83,68 @@ class UI:
     def end_capture(self) -> None:
         self._click, self.prompt = None, ""
 
-    def _mouse(self, event, x, y, *_) -> None:
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        for (x0, y0, x1, y1), _, cb in self.buttons:
-            if x0 <= x < x1 and y0 <= y < y1:
-                cb()
-                return
-        if self._click:
-            self._click(x, y)
+    def _mouse(self, event, x, y, flags, _) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            for w in self.widgets:
+                x0, y0, x1, y1 = w.rect
+                if x0 <= x < x1 and y0 <= y < y1:
+                    if isinstance(w, Button):
+                        w.cb()
+                    else:
+                        self._drag = w
+                        w.set_from_x(x)
+                    return
+            if self._click and x < self._img_w:
+                self._click(x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and self._drag and flags & cv2.EVENT_FLAG_LBUTTON:
+            self._drag.set_from_x(x)
+        elif event == cv2.EVENT_LBUTTONUP:
+            self._drag = None
 
-    def show(self, img: np.ndarray, status: str = "") -> int:
-        for (x0, y0, x1, y1), label, _ in self.buttons:
-            cv2.rectangle(img, (x0, y0), (x1, y1), (60, 60, 60), -1)
-            cv2.rectangle(img, (x0, y0), (x1, y1), (200, 200, 200), 1)
-            cv2.putText(img, label, (x0 + self.PAD, y1 - 7), FONT, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        w = img.shape[1]
-        for i, (name, v) in enumerate(self.sliders.items()):
-            label = f"{name}: {v:.3g}"
-            (tw, _), _ = cv2.getTextSize(label, FONT, 0.5, 1)
-            org = (w - tw - self.PAD, self.PAD + self.H + 20 + 20 * i)
-            cv2.putText(img, label, org, FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(img, label, org, FONT, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-        text = self.prompt or status
-        if text:
-            cv2.putText(img, text, (self.PAD, img.shape[0] - 10), FONT, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-        cv2.imshow(self.name, img)
-        key = cv2.waitKey(1) & 0xFF
+    def _panel(self, stats: list[str]) -> np.ndarray:
+        p = np.full((2000, self.W, 3), PANEL, np.uint8)
+        ox, pad, y = self._img_w, 8, 8
+        x = pad
+        for b in (w for w in self.widgets if isinstance(w, Button)):
+            (tw, _), _ = cv2.getTextSize(b.label, FONT, 0.45, 1)
+            bw = tw + 2 * pad
+            if x + bw > self.W - pad:
+                x, y = pad, y + self.ROW + 4
+            cv2.rectangle(p, (x, y), (x + bw, y + self.ROW), DARK, -1)
+            cv2.rectangle(p, (x, y), (x + bw, y + self.ROW), GREY, 1)
+            text(p, b.label, (x + pad, y + 17))
+            b.rect = (ox + x, y, ox + x + bw, y + self.ROW)
+            x += bw + 4
+        y += self.ROW + 12
+        for s in (w for w in self.widgets if isinstance(w, Slider)):
+            v = getattr(s.obj, s.attr)
+            text(p, f"{s.label}: {v:.3g}", (pad, y + 12))
+            y0, y1 = y + 18, y + 28
+            cv2.rectangle(p, (pad, y0), (self.W - pad, y1), DARK, -1)
+            f = min(max((v - s.lo) / (s.hi - s.lo), 0.0), 1.0)
+            cv2.rectangle(p, (pad, y0), (pad + int(f * (self.W - 2 * pad)), y1), ACCENT, -1)
+            s.rect = (ox + pad, y0 - 4, ox + self.W - pad, y1 + 4)
+            y += 38
+        y += 6
+        for line in stats:
+            text(p, line, (pad, y + 12))
+            y += 18
+        return p[:y + 8]
+
+    def show(self, img: np.ndarray, stats: list[str]) -> int:
+        """Draws and displays the window. Returns the key pressed (-1 for none, 27 if closed)."""
+        self._img_w = img.shape[1]
+        if self.prompt:
+            h = img.shape[0]
+            cv2.rectangle(img, (0, h - 28), (self._img_w, h), (0, 0, 0), -1)
+            text(img, self.prompt, (8, h - 9), ACCENT, 0.55)
+        panel = self._panel(stats)
+        h = max(img.shape[0], panel.shape[0])
+        pad = lambda a, c: cv2.copyMakeBorder(a, 0, h - a.shape[0], 0, 0, cv2.BORDER_CONSTANT, value=c)
+        cv2.imshow(self.name, np.hstack((pad(img, (0, 0, 0)), pad(panel, PANEL))))
+        key = cv2.waitKey(1)
         if key in (10, 13) and self._click:
             self.end_capture()
+        if cv2.getWindowProperty(self.name, cv2.WND_PROP_VISIBLE) < 1:
+            return 27
         return key
-
-
-class FpsCounter:
-    """True average over the last `window` seconds."""
-
-    def __init__(self, window: float = 1.0) -> None:
-        self._window = window
-        self._stamps: deque[float] = deque()
-
-    def tick(self) -> float:
-        now = time.perf_counter()
-        self._stamps.append(now)
-        while now - self._stamps[0] > self._window:
-            self._stamps.popleft()
-        span = now - self._stamps[0]
-        return (len(self._stamps) - 1) / span if span > 0 else 0.0

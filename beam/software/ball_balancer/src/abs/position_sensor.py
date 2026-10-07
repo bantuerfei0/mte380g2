@@ -7,12 +7,16 @@ import numpy as np
 class PositionSensor(ABC):
     """
     Tracks a ball. Positions are normalised to -1..1 per axis; None means no ball found.
-    Subclasses run task() on their own thread and call _publish() with each measurement.
+
+    To add a sensor: subclass this, implement task() and render(), and register it in
+    src/impl/__init__.py. task() runs on its own thread and calls _publish() per measurement.
+    Everything else has a working default.
     """
 
     dims = 1
+    views: tuple[str, ...] = ("Default",)  # render() modes, cycled with the View button
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: dict, cal: dict) -> None:
         self._cond = threading.Condition()
         self._seq = 0
         self._last_read = 0
@@ -42,21 +46,20 @@ class PositionSensor(ABC):
             self._last_read = self._seq
             return self._pos, self._t
 
-    def get_position(self) -> np.ndarray | None:
-        with self._cond:
-            return self._pos
-
     @abstractmethod
     def task(self) -> None: ...
 
     @abstractmethod
+    def render(self, view: str, target: np.ndarray) -> np.ndarray:
+        """Return a BGR image of the given view."""
+
     def add_controls(self, ui) -> None:
-        """Register buttons/sliders on the main window."""
+        """Register buttons/sliders. They are removed automatically when the sensor is switched out."""
 
-    @abstractmethod
-    def render(self, target: np.ndarray) -> np.ndarray:
-        """Return a BGR image for the main window."""
+    def stats(self) -> list[str]:
+        """Extra lines for the stats panel."""
+        return []
 
-    @abstractmethod
     def state(self) -> dict:
-        """Calibration data to save between runs."""
+        """Calibration data saved to calibration.json and passed back as `cal` next time."""
+        return {}
