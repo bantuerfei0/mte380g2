@@ -250,3 +250,5 @@ if __name__ == "__main__":
     run_test_case(platform, "Ball near S1 (+Y)", ball_pos=(0.0, 40.0), target_pos=(0.0, 0.0))
     run_test_case(platform, "Offset Target", ball_pos=(-15.0, -15.0), target_pos=(20.0, 10.0))
     run_test_case(platform, "Edge Case (literal)", ball_pos=(99, -99), target_pos=(0, 0))
+    run_test_case(platform, "Edge Edge Case (x to -x)", ball_pos=(140, 0), target_pos=(-140, 0))
+    run_test_case(platform, "Edge Edge Case (y to -y)", ball_pos=(0, 140), target_pos=(0, -140))
