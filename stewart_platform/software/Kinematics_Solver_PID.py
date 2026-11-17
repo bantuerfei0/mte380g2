@@ -230,21 +230,23 @@ def run_test_case(
 # Example Usage
 # ==========================================
 if __name__ == "__main__":
-    # Define physical dimensions of your platform (in mm)
+    # Stewart Platform dimensions (in mm)
     platform = StewartPlatformController(
-        R=80.0,           # Platform ball joint radius
-        L=65.0,           # Base servo radius
-        H=120.0,          # Nominal platform height
-        l1=50.0,          # Lower servo arm length
-        l2=110.0,         # Upper connecting rod length
-        max_tilt_deg=15.0,
-        kp=0.004,
-        kd=0.002,
+        R = 140,                # Platform radius (distance from platform centre to ball joints)
+        L = 54,                 # Base servo radius (xy-radius from servos to base centre)
+        H = 100,                # "Default" height (z-offset from servo acutation point to table)
+        l1 = 80,                # Driven link length
+        l2 = 94,                # Ball joint link length
+        max_tilt_deg=10,        # maximum table tilt
+        kp=0.002,
+        kd=0.001,
         ki=0.0,
-        elbow_up=False,   # Elbows point outward
+        elbow_up=False,         # Elbows point outward
     )
 
+    print("Kp: " + str(platform.kp) + ", Kd: " + str(platform.kd) + ", Ki: " + str(platform.ki))
     run_test_case(platform, "Flat (idle case)", ball_pos=(0.0, 0.0), target_pos=(0.0, 0.0))
     run_test_case(platform, "Ball near S2 (+X, -Y)", ball_pos=(30.0, -20.0), target_pos=(0.0, 0.0))
     run_test_case(platform, "Ball near S1 (+Y)", ball_pos=(0.0, 40.0), target_pos=(0.0, 0.0))
     run_test_case(platform, "Offset Target", ball_pos=(-15.0, -15.0), target_pos=(20.0, 10.0))
+    run_test_case(platform, "Edge Case (literal)", ball_pos=(99, -99), target_pos=(0, 0))
