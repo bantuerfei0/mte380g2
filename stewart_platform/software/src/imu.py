@@ -24,8 +24,9 @@ class IMU:
                     raise OSError("IMU reset timed out")
                 time.sleep(.002)
             self.bus.write_byte_data(self.address, 0x12, 0x44)  # coherent samples, increment address
+            self.bus.write_byte_data(self.address, 0x17, 0x80)  # LPF2, low latency, 416 Hz / 50
             self.bus.write_byte_data(self.address, 0x10, 0x68)  # 416 Hz, +/-4 g
-            time.sleep(.015)
+            time.sleep(.15)  # let the accelerometer filter settle before reading tilt
         except BaseException:
             self.close()
             raise
@@ -39,13 +40,17 @@ class IMU:
         components = acceleration[abs(self.axes)-1] * np.sign(self.axes)
         return np.degrees(np.arcsin(np.clip(components/magnitude, -1, 1))) - self.offset
 
-    def average(self, samples=20):
+    def average(self, samples=20, *, measurement="IMU measurement", stability_limit_deg=.15):
         angles = []
         for _ in range(samples):
             angles.append(self.tilt())
             time.sleep(.01)
-        if np.max(np.std(angles, axis=0)) > .15:
-            raise ValueError("Plate moved during measurement.")
+        spread = np.std(angles, axis=0)
+        if np.max(spread) > stability_limit_deg:
+            raise ValueError(
+                f"{measurement}: unstable tilt (X {spread[0]:.2f}, "
+                f"Y {spread[1]:.2f} deg std dev, limit {stability_limit_deg:.2f})."
+            )
         return np.mean(angles, axis=0)
 
     def close(self):

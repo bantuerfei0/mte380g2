@@ -10,10 +10,10 @@ from .settings import save, validate
 import json
 
 
-def settled(imu, stop):
-    if stop.wait(.45):
+def settled(imu, stop, measurement):
+    if stop.wait(1.0):
         raise RuntimeError("Calibration cancelled.")
-    return imu.average()
+    return imu.average(measurement=measurement, stability_limit_deg=.25)
 
 
 def identify(servos, imu, probe, stop):
@@ -22,9 +22,9 @@ def identify(servos, imu, probe, stop):
         delta = np.zeros(3)
         delta[index] = probe
         servos.write(servos.park - delta)
-        minus = settled(imu, stop)
+        minus = settled(imu, stop, f"Servo {index+1} at park - {probe:g} us")
         servos.write(servos.park + delta)
-        plus = settled(imu, stop)
+        plus = settled(imu, stop, f"Servo {index+1} at park + {probe:g} us")
         servos.write(servos.park)
         if np.linalg.norm(plus-minus) < .4:
             raise ValueError(f"Servo {index+1} produced insufficient tilt.")
@@ -52,7 +52,8 @@ def configure(action, config, path, hardware, stop):
         imu = IMU(config)
         session.callback(imu.close)
         if action in ("level", "read"):
-            tilt = imu.average(100)
+            measurement = "Capture level" if action == "level" else "Read tilt"
+            tilt = imu.average(100, measurement=measurement)
             if action == "read":
                 return None, None, f"Tilt X,Y {tilt.round(2)} deg"
             offset = (tilt + imu.offset).tolist()
@@ -72,7 +73,7 @@ def configure(action, config, path, hardware, stop):
             matrix = identify(servos, imu, config["probe_us"], stop)
             save(map_path, {"config": config, "deg_per_us": matrix.tolist()})
             return None, None, "Servo responses saved."
-        rest = home(servos, inverse, lambda: settled(imu, stop)) if action == "home" else servos.park
+        rest = home(servos, inverse, lambda: settled(imu, stop, "Homing")) if action == "home" else servos.park
         drive = TiltDrive(servos, inverse, rest, action == "continuous")
         hardware.enter_context(session.pop_all())
         return imu, drive, "Ready to arm."
