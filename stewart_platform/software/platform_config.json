@@ -35,14 +35,14 @@
     null
   ],
   "min_us": [
-    null,
-    null,
-    null
+    1600,
+    1600,
+    1600
   ],
   "max_us": [
-    null,
-    null,
-    null
+    2480,
+    2480,
+    2480
   ],
   "probe_us": 25,
   "max_tilt_deg": 4

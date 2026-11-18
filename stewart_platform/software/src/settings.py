@@ -9,8 +9,8 @@ CONFIG = ROOT / "platform_config.json"
 RECORDINGS = ROOT / "recordings"
 DEFAULTS = dict(camera_index=0, marker_xy_cm=[[0, 10], [8.66, -5], [-8.66, -5]],
                 working_radius_cm=10, imu_downhill_axes=[-1, -2], imu_level_offset_deg=[0, 0],
-                pwm_chip=0, pwm_channels=[2, 0, 3], park_us=[None]*3, min_us=[None]*3,
-                max_us=[None]*3, probe_us=25, max_tilt_deg=4)
+                pwm_chip=0, pwm_channels=[2, 0, 3], park_us=[None]*3, min_us=[1600]*3,
+                max_us=[2480]*3, probe_us=25, max_tilt_deg=4)
 
 
 def save(path, data):
