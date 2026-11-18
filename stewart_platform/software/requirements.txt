@@ -1,0 +1,3 @@
+smbus2
+rpi-hardware-pwm
+opencv-python
