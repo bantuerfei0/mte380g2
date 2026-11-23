@@ -264,25 +264,36 @@ def run_test_case(
 # Test Cases + Manual Calibration
 # ==========================================
 if __name__ == "__main__":
+    # CLANKER COMMENTS:
     # Hardcoded two-point calibration per servo: (angle_deg, pwm_value)
-    # Example values below use pulse width in microseconds (us), e.g. at 0 deg and 60 deg.
+    # Example values below (i replaced them) use pulse width in microseconds (us), e.g. at 0 deg and 60 deg.
     # You can also use PCA9685 ticks or duty cycle units as the lerp is identical.
 
-    # 60 degrees is about 8
+    """
+    ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS ALEX READ THIS 
+
+    CALIBRATION COMMENTS:
+    - 60 degrees is about 8%
+    - OUTPUT ORDER IS (CHANNEL 2, CHANNEL 3, CHANNEL 0)
+    - EXAMPLE: angles, pwms = platform.step(ball_pos, target_pos, dt=dt)
+    - OUTPUTS:
+        - angles = (CH2 angle, CH3 angle, CH0 angle)
+        - pwms = (CH2 PWM %, CH3 PWM %, CH0 PWM %)
+    """
     SERVO_CALIBRATIONS = [
-        ServoCalibration(       # channel 2
+        ServoCalibration(       # channel 2 calibration
             point1=(0.0, 11.1),
             point2=(90.0, 6.9),
             min_pwm=7.5,
             max_pwm=12,
         ),  # Servo 1
-        ServoCalibration(       # channel 0
+        ServoCalibration(       # channel 0 calibration
             point1=(0.0, 11.2),
             point2=(90.0, 6.7),
             min_pwm=7.5,
             max_pwm=12,
         ),  # Servo 2
-        ServoCalibration(       # channel 3
+        ServoCalibration(       # channel 3 calibration
             point1=(0.0, 11.2),
             point2=(90, 6.8),
             min_pwm=7.5,
@@ -290,6 +301,7 @@ if __name__ == "__main__":
         ),  # Servo 3
     ]
 
+    # init class
     platform = StewartPlatformController(
         R = 140,                # Platform radius (distance from platform centre to ball joints)
         L = 54,                 # Base servo radius (xy-radius from servos to base centre)
@@ -304,6 +316,8 @@ if __name__ == "__main__":
         calibrations=SERVO_CALIBRATIONS,
 
     )
+
+    # test cases
 
     run_test_case(
         platform,
@@ -329,6 +343,21 @@ if __name__ == "__main__":
         ball_pos=(-15.0, -15.0),
         target_pos=(20.0, 10.0),
     )
-    run_test_case(platform, "Edge Case (literal)", ball_pos=(99, -99), target_pos=(0, 0))
-    run_test_case(platform, "Edge Edge Case (x to -x)", ball_pos=(140, 0), target_pos=(-140, 0))
-    run_test_case(platform, "Edge Edge Case (y to -y)", ball_pos=(0, 140), target_pos=(0, -140))
+    run_test_case(
+        platform, 
+        "Edge Case (literal)", 
+        ball_pos=(99, -99), 
+        target_pos=(0, 0)
+    )
+    run_test_case(
+        platform, 
+        "Edge Edge Case (x to -x)", 
+        ball_pos=(140, 0), 
+        target_pos=(-140, 0)
+    )
+    run_test_case(
+        platform, 
+        "Edge Edge Case (y to -y)", 
+        ball_pos=(0, 140), 
+        target_pos=(0, -140)
+    )
