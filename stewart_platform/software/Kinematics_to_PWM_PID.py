@@ -241,7 +241,7 @@ def run_test_case(
     label: str,
     ball_pos: Tuple[float, float],
     target_pos: Tuple[float, float],
-    dt: float = 0.016,
+    dt: float = 0.0333,
     reset: bool = True,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
     """
@@ -267,31 +267,33 @@ if __name__ == "__main__":
     # Hardcoded two-point calibration per servo: (angle_deg, pwm_value)
     # Example values below use pulse width in microseconds (us), e.g. at 0 deg and 60 deg.
     # You can also use PCA9685 ticks or duty cycle units as the lerp is identical.
+
+    # 60 degrees is about 8
     SERVO_CALIBRATIONS = [
-        ServoCalibration(
-            point1=(0.0, 1510.0),
-            point2=(60.0, 2130.0),
-            min_pwm=900.0,
-            max_pwm=2200.0,
+        ServoCalibration(       # channel 2
+            point1=(0.0, 11.1),
+            point2=(90.0, 6.9),
+            min_pwm=7.5,
+            max_pwm=12,
         ),  # Servo 1
-        ServoCalibration(
-            point1=(0.0, 1485.0),
-            point2=(60.0, 2115.0),
-            min_pwm=900.0,
-            max_pwm=2200.0,
+        ServoCalibration(       # channel 0
+            point1=(0.0, 11.2),
+            point2=(90.0, 6.7),
+            min_pwm=7.5,
+            max_pwm=12,
         ),  # Servo 2
-        ServoCalibration(
-            point1=(0.0, 1525.0),
-            point2=(60.0, 2140.0),
-            min_pwm=900.0,
-            max_pwm=2200.0,
+        ServoCalibration(       # channel 3
+            point1=(0.0, 11.2),
+            point2=(90, 6.8),
+            min_pwm=7.5,
+            max_pwm=12,
         ),  # Servo 3
     ]
 
     platform = StewartPlatformController(
         R = 140,                # Platform radius (distance from platform centre to ball joints)
         L = 54,                 # Base servo radius (xy-radius from servos to base centre)
-        H = 100,                # "Default" height (z-offset from servo acutation point to table)
+        H = 120,                # "Default" height (z-offset from servo acutation point to table)
         l1 = 80,                # Driven link length
         l2 = 94,                # Ball joint link length
         max_tilt_deg=10,        # maximum table tilt
