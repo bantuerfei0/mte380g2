@@ -1,4 +1,3 @@
-#Requires opencv-python and numpy.
 import time
 import cv2
 import numpy as np
@@ -8,7 +7,7 @@ MAX_MISSED_FRAMES = 5  # Keep identities for this many invalid frames.
 MAX_STEP_PX = 35
 START_RADIUS_PX = 10
 ROTATION_TOLERANCE_DEG = 1.0
-RIGHT_ANGLE_TOLERANCE_DEG = 3.0
+RIGHT_ANGLE_TOLERANCE_DEG = 2.0
 CENTER_TOLERANCE_PX = 10.0
 READY_HOLD_SECONDS = 1.0
 
@@ -28,12 +27,14 @@ def measure(points):
 
 class CameraSensor:
     def __init__(self, device_index=0):
-        self.hue, self.saturation, self.brightness = 30, 80, 0 
+        self.hue, self.saturation, self.brightness = 30, 37, 126;
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.candidates = []
         self.status = 'Searching: hold dots in starting orientation'
         self.settings = None
+        self._distance_cache = {}  # name -> (pixels, last update timestamp)
+        self._fresh_distances = set()
         self.ready, self.aligned_since = False, None
         self.calibration_status = 'Aligning'
         self.capture = cv2.VideoCapture(device_index)
@@ -42,6 +43,7 @@ class CameraSensor:
             raise RuntimeError('Cannot open camera; try device_index=1')
 
     def reset(self):
+        self._fresh_distances.clear()  # Retain distances through tracking resets.
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.status = 'Searching: return to starting orientation'
@@ -156,8 +158,62 @@ class CameraSensor:
         self.calibration_status = ('Ready' if self.ready else
                                   f'Hold position: {elapsed:.1f}/{READY_HOLD_SECONDS:.1f} s')
 
+    def clear_distance_cache(self):
+        """Call after changing the camera setup or marker placement."""
+        self._distance_cache.clear()
+        self._fresh_distances.clear()
+
+    def get_line_distances(self):
+        """Return latest distances plus freshness metadata; does not capture a frame.
+
+        Each entry has pixels (None before first observation), cached,
+        age_seconds, and updated_at (time.perf_counter clock).
+        Call read() regularly to refresh. Returned dictionaries are copies.
+        """
+        now = time.perf_counter()
+        result = {}
+        for name in ('top_center', 'center_right'):
+            pixels, updated = self._distance_cache.get(name, (None, None))
+            result[name] = dict(
+                pixels=pixels,
+                cached=pixels is not None and name not in self._fresh_distances,
+                age_seconds=None if updated is None else max(0., now-updated),
+                updated_at=updated,
+            )
+        return result
+
+    def get_top_center_distance(self):
+        """Latest top-centre pixels, or None until first measured."""
+        return self._distance_cache.get('top_center', (None, None))[0]
+
+    def get_center_right_distance(self):
+        """Latest centre-right pixels, or None until first measured."""
+        return self._distance_cache.get('center_right', (None, None))[0]
+
+    def _update_line_distances(self, anchors, now):
+        # Full tracking gives current labelled points. During short occlusions,
+        # independently match still-visible markers to the previous identities.
+        visible = self.points
+        if visible is None and anchors is not None:
+            matches = {name: [i for i, p in enumerate(self.candidates)
+                             if np.linalg.norm(p-anchors[name]) <= MAX_STEP_PX]
+                       for name in NAMES}
+            unique = {name: ids[0] for name, ids in matches.items() if len(ids) == 1}
+            visible = {name: self.candidates[i] for name, i in unique.items()
+                       if list(unique.values()).count(i) == 1}
+        if visible is None:
+            return
+        for name, a, b in [('top_center', 'top', 'center'),
+                            ('center_right', 'center', 'right')]:
+            if a in visible and b in visible:
+                pixels = float(np.linalg.norm(visible[a]-visible[b]))
+                if pixels >= 1:
+                    self._distance_cache[name] = (pixels, now)
+                    self._fresh_distances.add(name)
+
     def read(self):
         """Return (BGR frame, red mask, current points or None, ready bool)."""
+        self._fresh_distances.clear()
         ok, frame = self.capture.read()
         now = time.perf_counter()
         if not ok:
@@ -168,7 +224,9 @@ class CameraSensor:
             self.reset()
             self.settings = settings
         self.candidates, mask = self.detect(frame)
+        anchors = self.last_points
         self.track(self.candidates)
+        self._update_line_distances(anchors, now)
         self.check_ready(frame, now)
         return frame, mask, self.points, self.ready
 
@@ -228,7 +286,15 @@ class CameraPreview:
                 cv2.putText(image, name, (pixel[0]+12, pixel[1]),
                             cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
         image = self.fit(image, 900, 600)
-        lines = [f'Ready: {ready}', self.sensor.calibration_status, 'R: reset | Esc: quit']
+        distances = self.sensor.get_line_distances()
+        lines = [f'Ready: {ready}', self.sensor.calibration_status]
+        for name, label in [('top_center', 'Top-Center Distance'),
+                            ('center_right', 'Center-Right Distance')]:
+            entry = distances[name]
+            value = '--' if entry['pixels'] is None else f"{entry['pixels']:.1f}"
+            suffix = ' (cached)' if entry['cached'] else ''
+            lines.append(f'{label}: {value} px{suffix}')
+        lines += ['R: reset | Esc: quit']
         for i, text in enumerate(lines):
             cv2.putText(image, text, (12, 24+24*i), cv2.FONT_HERSHEY_SIMPLEX, .5,
                         (0, 255, 0) if ready else (255, 255, 255), 1, cv2.LINE_AA)
