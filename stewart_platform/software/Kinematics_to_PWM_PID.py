@@ -100,12 +100,12 @@ class StewartPlatformController:
         self.integral_y = 0.0
 
 
-
+    "FRAME RATE FRAME RATE FRAME RATE FRAME RATE FRAME RATE FRAME RATE IS dt"
     def compute_pid_tilt(
         self,
         ball_pos: Tuple[float, float],
         target_pos: Tuple[float, float],
-        dt: float = 0.033,
+        dt: float = 1/30,
     ) -> Tuple[float, float]:
         
         """
