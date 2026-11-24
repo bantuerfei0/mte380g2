@@ -1,0 +1,13 @@
+{
+  "hue_tolerance": 6,
+  "min_saturation": 102,
+  "min_brightness": 148,
+  "min_area": 20.0,
+  "max_area": 5000.0,
+  "min_circularity": 0.5,
+  "max_step_px": 35.0,
+  "stable_frames": 8,
+  "stable_radius_px": 5.0,
+  "roi_xywh": null,
+  "reference_geometry": null
+}

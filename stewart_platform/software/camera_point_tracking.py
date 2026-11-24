@@ -1,3 +1,4 @@
+#Requires opencv-python and numpy.
 import time
 import cv2
 import numpy as np
@@ -6,6 +7,10 @@ NAMES = ('top', 'center', 'right')
 MAX_MISSED_FRAMES = 5  # Keep identities for this many invalid frames.
 MAX_STEP_PX = 35
 START_RADIUS_PX = 10
+ROTATION_TOLERANCE_DEG = 1.0
+RIGHT_ANGLE_TOLERANCE_DEG = 3.0
+CENTER_TOLERANCE_PX = 10.0
+READY_HOLD_SECONDS = 1.0
 
 
 def measure(points):
@@ -16,18 +21,21 @@ def measure(points):
     if min(tc, rc, tr) < 1:
         return None
     alpha = np.degrees(np.arccos(np.clip(np.dot(u, v)/(tc*rc), -1, 1)))
-    return dict(alpha_deg=float(alpha), distance_tc_px=float(tc),
+    return dict(alpha_deg=float(np.degrees(np.arctan2(u[0], -u[1]))),
+                internal_angle_deg=float(alpha), distance_tc_px=float(tc),
                 distance_rc_px=float(rc), distance_tr_px=float(tr))
 
 
 class CameraSensor:
     def __init__(self, device_index=0):
-        self.hue, self.saturation, self.brightness = 6, 102, 148
+        self.hue, self.saturation, self.brightness = 30, 80, 0 
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.candidates = []
         self.status = 'Searching: hold dots in starting orientation'
         self.settings = None
+        self.ready, self.aligned_since = False, None
+        self.calibration_status = 'Aligning'
         self.capture = cv2.VideoCapture(device_index)
         if not self.capture.isOpened():
             self.capture.release()
@@ -37,6 +45,8 @@ class CameraSensor:
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.status = 'Searching: return to starting orientation'
+        self.ready, self.aligned_since = False, None
+        self.calibration_status = 'Aligning'
 
     def detect(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -78,7 +88,7 @@ class CameraSensor:
             if (g and min(g['distance_tc_px'], g['distance_rc_px']) >= 15
                     and abs(np.degrees(np.arctan2(u[0], -u[1]))) <= 35
                     and abs(np.degrees(np.arctan2(-v[1], v[0]))) <= 35
-                    and 60 <= g['alpha_deg'] <= 120):
+                    and 60 <= g['internal_angle_deg'] <= 120):
                 return points
         return None
 
@@ -119,9 +129,37 @@ class CameraSensor:
         if self.stable >= 8:
             self.points, self.last_points, self.status = points, points, 'Tracking'
 
+    def check_ready(self, frame, now):
+        """Update readiness from CURRENT points; old tracked positions never count."""
+        self.ready = False
+        g = measure(self.points) if self.points is not None else None
+        if g is None:
+            self.aligned_since = None
+            self.calibration_status = 'Aligning: markers not tracked'
+            return
+        height, width = frame.shape[:2]
+        center_error = np.linalg.norm(self.points['center'] - [width/2, height/2])
+        checks = {
+            'rotation': abs(g['alpha_deg']) <= ROTATION_TOLERANCE_DEG,
+            'centering': center_error <= CENTER_TOLERANCE_PX,
+            'right angle': abs(g['internal_angle_deg']-90) <= RIGHT_ANGLE_TOLERANCE_DEG,
+        }
+        failed = [name for name, passed in checks.items() if not passed]
+        if failed:
+            self.aligned_since = None
+            self.calibration_status = 'Aligning: ' + ', '.join(failed)
+            return
+        if self.aligned_since is None:
+            self.aligned_since = now
+        elapsed = now - self.aligned_since
+        self.ready = bool(elapsed >= READY_HOLD_SECONDS)
+        self.calibration_status = ('Ready' if self.ready else
+                                  f'Hold position: {elapsed:.1f}/{READY_HOLD_SECONDS:.1f} s')
+
     def read(self):
+        """Return (BGR frame, red mask, current points or None, ready bool)."""
         ok, frame = self.capture.read()
-        acquired_at = time.perf_counter()
+        now = time.perf_counter()
         if not ok:
             self.reset()
             raise RuntimeError('Camera stopped returning frames')
@@ -131,10 +169,92 @@ class CameraSensor:
             self.settings = settings
         self.candidates, mask = self.detect(frame)
         self.track(self.candidates)
-        result = measure(self.points) if self.points is not None else None
-        if result is not None:
-            result['timestamp'] = acquired_at
-        return frame, mask, self.points, result
+        self.check_ready(frame, now)
+        return frame, mask, self.points, self.ready
 
     def close(self):
+        """Release the camera when the PROJECT is finished using it."""
         self.capture.release()
+
+
+class CameraPreview:
+    """Optional test UI. show() returns True on Escape, NOT on readiness.
+
+    R resets calibration. close() destroys only these two preview windows,
+    leaving the sensor camera open for a project's next stage.
+    """
+    CAMERA_WINDOW = 'Platform camera'
+    SETTINGS_WINDOW = 'Marker settings'
+
+    def __init__(self, sensor):
+        self.sensor = sensor
+        self.closed = False
+        try:
+            cv2.namedWindow(self.CAMERA_WINDOW, cv2.WINDOW_AUTOSIZE)
+            cv2.namedWindow(self.SETTINGS_WINDOW, cv2.WINDOW_AUTOSIZE)
+            cv2.moveWindow(self.CAMERA_WINDOW, 20, 60)
+            cv2.moveWindow(self.SETTINGS_WINDOW, 940, 60)
+            for label, attr, maximum in [('H', 'hue', 30), ('S', 'saturation', 255), ('V', 'brightness', 255)]:
+                cv2.createTrackbar(label, self.SETTINGS_WINDOW, getattr(sensor, attr), maximum,
+                                  lambda value, attr=attr: setattr(sensor, attr,
+                                      max(1, value) if attr == 'hue' else value))
+        except Exception:
+            self.close()
+            raise
+
+    @staticmethod
+    def fit(image, width, height):
+        scale = min(width/image.shape[1], height/image.shape[0])
+        return cv2.resize(image, (max(1, round(image.shape[1]*scale)),
+                                  max(1, round(image.shape[0]*scale))),
+                          interpolation=cv2.INTER_NEAREST)
+
+    def show(self, frame, mask, points, ready):
+        """Display one sample without modifying the caller's frame. True = quit."""
+        if self.closed:
+            raise RuntimeError('Preview is closed')
+        image = frame.copy()
+        height, width = image.shape[:2]
+        target = (width//2, height//2)
+        cv2.drawMarker(image, target, (255, 255, 0), cv2.MARKER_CROSS, 24, 1)
+        cv2.circle(image, target, round(CENTER_TOLERANCE_PX), (255, 255, 0), 1)
+        for p in self.sensor.candidates:
+            cv2.circle(image, tuple(np.rint(p).astype(int)), 10, (0, 255, 255), 2)
+        if points is not None:
+            center = tuple(np.rint(points['center']).astype(int))
+            for name in NAMES:
+                pixel = tuple(np.rint(points[name]).astype(int))
+                cv2.line(image, center, pixel, (0, 0, 0), 1)
+                cv2.putText(image, name, (pixel[0]+12, pixel[1]),
+                            cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
+        image = self.fit(image, 900, 600)
+        lines = [f'Ready: {ready}', self.sensor.calibration_status, 'R: reset | Esc: quit']
+        for i, text in enumerate(lines):
+            cv2.putText(image, text, (12, 24+24*i), cv2.FONT_HERSHEY_SIMPLEX, .5,
+                        (0, 255, 0) if ready else (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.imshow(self.CAMERA_WINDOW, image)
+        labels = np.full((90, 420, 3), 245, np.uint8)
+        descriptions = [f'H: Red hue tolerance = {self.sensor.hue}',
+                        f'S: Minimum saturation = {self.sensor.saturation}',
+                        f'V: Minimum brightness = {self.sensor.brightness}']
+        for i, text in enumerate(descriptions):
+            cv2.putText(labels, text, (10, 23+27*i), cv2.FONT_HERSHEY_SIMPLEX,
+                        .48, (0, 0, 0), 1, cv2.LINE_AA)
+        mask_preview = self.fit(mask, 420, 270)
+        canvas = np.zeros((mask_preview.shape[0], 420), np.uint8)
+        left = (420-mask_preview.shape[1])//2
+        canvas[:, left:left+mask_preview.shape[1]] = mask_preview
+        cv2.imshow(self.SETTINGS_WINDOW, np.vstack((labels, cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR))))
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('r'):
+            self.sensor.reset()
+        return key == 27
+
+    def close(self):
+        if not self.closed:
+            for name in (self.CAMERA_WINDOW, self.SETTINGS_WINDOW):
+                try:
+                    cv2.destroyWindow(name)
+                except cv2.error:
+                    pass
+            self.closed = True
