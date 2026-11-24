@@ -105,7 +105,7 @@ class StewartPlatformController:
         self,
         ball_pos: Tuple[float, float],
         target_pos: Tuple[float, float],
-        dt: float = 1/30,
+        dt: float = 1/50,
     ) -> Tuple[float, float]:
         
         """
