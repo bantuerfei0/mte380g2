@@ -89,21 +89,35 @@ class StewartPlatformController:
         self.integral_x: float = 0.0
         self.integral_y: float = 0.0
 
+
+    
     def reset_controller(self) -> None:
+
         """Resets velocity estimation and integral accumulators."""
+
         self.prev_ball_pos = None
         self.integral_x = 0.0
         self.integral_y = 0.0
+
+
 
     def compute_pid_tilt(
         self,
         ball_pos: Tuple[float, float],
         target_pos: Tuple[float, float],
-        dt: float = 0.016,
+        dt: float = 0.033,
     ) -> Tuple[float, float]:
+        
         """
         Computes desired spherical tilt angles (alpha, beta) from ball and target positions.
+        
+        This is where the PID stuff happens
+        TLDR: 
+            error = target_pos - ball_pos
+            desired tilt = kp * error + ki * integral(error) - kd * velocity
+            return (desired tilt converted to spherical coords)
         """
+
         bx, by = ball_pos
         tx, ty = target_pos
 
@@ -135,12 +149,17 @@ class StewartPlatformController:
 
         return alpha, beta
 
+
+
+
     def inverse_kinematics(
         self, alpha: float, beta: float
     ) -> Tuple[float, float, float]:
+        
         """
-        Computes the three geometric servo angles (in degrees) for spherical tilt (alpha, beta).
+        Compute the three servo angles needed to achieve the required tilt returned by compute_pid_tilt()
         """
+
         cos_a = math.cos(alpha)
         sin_a = math.sin(alpha)
         k = 1.0 - cos_a
@@ -192,8 +211,17 @@ class StewartPlatformController:
 
         return math.degrees(theta1), math.degrees(theta2), math.degrees(theta3)
 
+
+    
+
     def _solve_2link_servo(self, r: float, z: float, arm_id: int) -> float:
-        """Solves the 2-link triangle in the vertical plane of a single arm."""
+
+        """
+        Solves for the angle of the driven link in plane 
+        (basically a generic 2-link solver)
+        (i have no idea how it works)
+        """
+
         d_sq = r**2 + z**2
         d = math.sqrt(d_sq)
 
@@ -208,10 +236,15 @@ class StewartPlatformController:
 
         return math.atan2(z, r) + self.elbow_sign * math.acos(cos_phi)
 
+
+
+
     def angles_to_pwm(
         self, angles_deg: Tuple[float, float, float]
     ) -> Tuple[float, float, float]:
+        
         """Maps raw geometric angles (deg) to calibrated PWM values for S1, S2, S3."""
+
         c1, c2, c3 = self.calibrations
         a1, a2, a3 = angles_deg
         return (
@@ -226,10 +259,13 @@ class StewartPlatformController:
         target_pos: Tuple[float, float],
         dt: float = 0.016,
     ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        
         """
-        Main update function: takes (ball_x, ball_y) and (target_x, target_y) in mm,
-        and returns ((theta_1, theta_2, theta_3), (pwm_1, pwm_2, pwm_3)).
+        The BIG BIG FUNCTION that calls all the small functions:
+            INPUTS: (ball_x, ball_y), (target_x, target_y) (in mm),
+            OUTPUTS: ((theta_1, theta_2, theta_3), (pwm_1, pwm_2, pwm_3)).
         """
+
         alpha, beta = self.compute_pid_tilt(ball_pos, target_pos, dt)
         angles = self.inverse_kinematics(alpha, beta)
         pwms = self.angles_to_pwm(angles)
@@ -244,10 +280,14 @@ def run_test_case(
     dt: float = 0.0333,
     reset: bool = True,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    
     """
-    Runs a single test scenario on the platform controller and prints both
+    Runs a test scenario on the platform controller and prints both
     the geometric angles and calibrated PWM values.
+
+    Since the solver is meant to be called every frame, each test case represents 1 frame of output
     """
+
     if reset:
         platform.reset_controller()
 
