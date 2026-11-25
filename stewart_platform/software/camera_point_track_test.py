@@ -11,6 +11,9 @@ def main():
     try:
         preview = CameraPreview(sensor)
         while True:
+            val = sensor.read()
+            if val is None:
+                return
             frame, mask, points, ready = sensor.read()
 
             print(

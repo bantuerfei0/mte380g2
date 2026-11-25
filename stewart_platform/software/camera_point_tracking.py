@@ -27,7 +27,7 @@ def measure(points):
 
 class CameraSensor:
     def __init__(self, device_index=0):
-        self.hue, self.saturation, self.brightness = 30, 37, 126;
+        self.hue, self.saturation, self.brightness = 19, 133, 54
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.candidates = []
@@ -53,10 +53,18 @@ class CameraSensor:
     def detect(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h = max(1, min(30, int(self.hue)))
-        low = (0, int(self.saturation), int(self.brightness))
-        high = (180-h, int(self.saturation), int(self.brightness))
-        mask = cv2.inRange(hsv, low, (h, 255, 255))
-        mask |= cv2.inRange(hsv, high, (179, 255, 255))
+        blue_hue = 110
+
+        lower = (
+            max(0, blue_hue - h),
+            int(self.saturation),
+            int(self.brightness),
+        )
+        upper = (min(179, blue_hue + h), 255, 255)
+
+        mask = cv2.inRange(hsv, lower, upper)
+
+        
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
@@ -182,6 +190,10 @@ class CameraSensor:
             )
         return result
 
+    def get_alpha(self):
+        geometry = measure(self.points) if self.points is not None else None
+        return geometry['alpha_deg'] if geometry is not None else None
+
     def get_top_center_distance(self):
         """Latest top-centre pixels, or None until first measured."""
         return self._distance_cache.get('top_center', (None, None))[0]
@@ -212,13 +224,12 @@ class CameraSensor:
                     self._fresh_distances.add(name)
 
     def read(self):
-        """Return (BGR frame, red mask, current points or None, ready bool)."""
+        """Return (BGR frame, blue mask, current points or None, ready bool)."""
         self._fresh_distances.clear()
         ok, frame = self.capture.read()
         now = time.perf_counter()
         if not ok:
-            self.reset()
-            raise RuntimeError('Camera stopped returning frames')
+            return None
         settings = (self.hue, self.saturation, self.brightness)
         if settings != self.settings:
             self.reset()
@@ -287,7 +298,10 @@ class CameraPreview:
                             cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
         image = self.fit(image, 900, 600)
         distances = self.sensor.get_line_distances()
-        lines = [f'Ready: {ready}', self.sensor.calibration_status]
+        alpha = self.sensor.get_alpha()
+        alpha_text = '--' if alpha is None else f'{alpha:+.2f}'
+        lines = [f'Ready: {ready}', self.sensor.calibration_status,
+                 f'Alpha: {alpha_text} deg']
         for name, label in [('top_center', 'Top-Center Distance'),
                             ('center_right', 'Center-Right Distance')]:
             entry = distances[name]
@@ -300,7 +314,7 @@ class CameraPreview:
                         (0, 255, 0) if ready else (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow(self.CAMERA_WINDOW, image)
         labels = np.full((90, 420, 3), 245, np.uint8)
-        descriptions = [f'H: Red hue tolerance = {self.sensor.hue}',
+        descriptions = [f'H: blue hue tolerance = {self.sensor.hue}',
                         f'S: Minimum saturation = {self.sensor.saturation}',
                         f'V: Minimum brightness = {self.sensor.brightness}']
         for i, text in enumerate(descriptions):
