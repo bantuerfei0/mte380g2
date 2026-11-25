@@ -53,10 +53,18 @@ class CameraSensor:
     def detect(self, frame):
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h = max(1, min(30, int(self.hue)))
-        low = (0, int(self.saturation), int(self.brightness))
-        high = (180-h, int(self.saturation), int(self.brightness))
-        mask = cv2.inRange(hsv, low, (h, 255, 255))
-        mask |= cv2.inRange(hsv, high, (179, 255, 255))
+        blue_hue = 110
+
+        lower = (
+            max(0, blue_hue - h),
+            int(self.saturation),
+            int(self.brightness),
+        )
+        upper = (min(179, blue_hue + h), 255, 255)
+
+        mask = cv2.inRange(hsv, lower, upper)
+
+        
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
@@ -183,11 +191,6 @@ class CameraSensor:
         return result
 
     def get_alpha(self):
-        """Current image rotation in degrees; None when tracking is invalid.
-
-        Zero = top marker above centre. Positive = clockwise/rightward.
-        Call read() to refresh. Unlike line distances, alpha is not cached.
-        """
         geometry = measure(self.points) if self.points is not None else None
         return geometry['alpha_deg'] if geometry is not None else None
 
@@ -221,7 +224,7 @@ class CameraSensor:
                     self._fresh_distances.add(name)
 
     def read(self):
-        """Return (BGR frame, red mask, current points or None, ready bool)."""
+        """Return (BGR frame, blue mask, current points or None, ready bool)."""
         self._fresh_distances.clear()
         ok, frame = self.capture.read()
         now = time.perf_counter()
@@ -311,7 +314,7 @@ class CameraPreview:
                         (0, 255, 0) if ready else (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow(self.CAMERA_WINDOW, image)
         labels = np.full((90, 420, 3), 245, np.uint8)
-        descriptions = [f'H: Red hue tolerance = {self.sensor.hue}',
+        descriptions = [f'H: blue hue tolerance = {self.sensor.hue}',
                         f'S: Minimum saturation = {self.sensor.saturation}',
                         f'V: Minimum brightness = {self.sensor.brightness}']
         for i, text in enumerate(descriptions):
