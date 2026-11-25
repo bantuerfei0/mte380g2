@@ -37,7 +37,7 @@ class CameraSensor:
         self._fresh_distances = set()
         self.ready, self.aligned_since = False, None
         self.calibration_status = 'Aligning'
-        self.capture = cv2.VideoCapture(device_index)
+        self.capture = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
         if not self.capture.isOpened():
             self.capture.release()
             raise RuntimeError('Cannot open camera; try device_index=1')

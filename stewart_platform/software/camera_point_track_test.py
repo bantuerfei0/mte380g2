@@ -11,8 +11,11 @@ def main():
     try:
         preview = CameraPreview(sensor)
         while True:
+            val = sensor.read()
+            if val is None:
+                return
             frame, mask, points, ready = sensor.read()
-
+            
             print(
                 f"Top-Center: {sensor.get_top_center_distance()} px | "
                 f"Center-Right: {sensor.get_center_right_distance()} px"
