@@ -27,7 +27,7 @@ def measure(points):
 
 class CameraSensor:
     def __init__(self, device_index=0):
-        self.hue, self.saturation, self.brightness = 30, 37, 126;
+        self.hue, self.saturation, self.brightness = 19, 133, 54
         self.points, self.reference, self.stable = None, None, 0
         self.last_points, self.missed = None, 0
         self.candidates = []
@@ -182,6 +182,15 @@ class CameraSensor:
             )
         return result
 
+    def get_alpha(self):
+        """Current image rotation in degrees; None when tracking is invalid.
+
+        Zero = top marker above centre. Positive = clockwise/rightward.
+        Call read() to refresh. Unlike line distances, alpha is not cached.
+        """
+        geometry = measure(self.points) if self.points is not None else None
+        return geometry['alpha_deg'] if geometry is not None else None
+
     def get_top_center_distance(self):
         """Latest top-centre pixels, or None until first measured."""
         return self._distance_cache.get('top_center', (None, None))[0]
@@ -217,8 +226,7 @@ class CameraSensor:
         ok, frame = self.capture.read()
         now = time.perf_counter()
         if not ok:
-            self.reset()
-            raise RuntimeError('Camera stopped returning frames')
+            return None
         settings = (self.hue, self.saturation, self.brightness)
         if settings != self.settings:
             self.reset()
@@ -287,7 +295,10 @@ class CameraPreview:
                             cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 0, 0), 2)
         image = self.fit(image, 900, 600)
         distances = self.sensor.get_line_distances()
-        lines = [f'Ready: {ready}', self.sensor.calibration_status]
+        alpha = self.sensor.get_alpha()
+        alpha_text = '--' if alpha is None else f'{alpha:+.2f}'
+        lines = [f'Ready: {ready}', self.sensor.calibration_status,
+                 f'Alpha: {alpha_text} deg']
         for name, label in [('top_center', 'Top-Center Distance'),
                             ('center_right', 'Center-Right Distance')]:
             entry = distances[name]
